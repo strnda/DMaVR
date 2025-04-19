@@ -1,0 +1,16 @@
+modeloutput <- list.files(
+  path = ".",                      
+  pattern = "model_output\\.txt$", 
+  recursive = TRUE,                
+  full.names = TRUE                
+)
+
+
+
+modeloutput <- grep("model_output_nldas", modeloutput, value = TRUE)
+if (length(modeloutput) > 0) {
+  cat("Found", length(modeloutput), "model output files:\n")
+  print(modeloutput)
+} else {
+  cat("Not Found")
+}

@@ -1,0 +1,81 @@
+library(ggplot2)
+library(data.table)
+library(plotly)  
+'[]]]]]'
+
+mu <- fst(path = "data_snipet.fst")
+mu <- as.data.table(x = data)
+mu[, HYR := ifelse(MNTH %in% 10:12, YR + 1, YR)]  
+mu[, WB := PRCP - PET] 
+max_SWE <- mu[, .(max_SWE = max(SWE, na.rm = TRUE)), by = .(ID, HYR)]
+
+
+
+
+runoff_plot <- ggplot(mu, aes(x = as.Date(paste(HYR, MNTH, "01", sep = "-")), y = OBS_RUN)) +
+  geom_line(color = "blue") +
+  geom_point(data = mu[OBS_RUN > quantile(OBS_RUN, 0.95)], color = "red", size = 1) +
+  labs(title = "Monthly Runoff Over Time", x = "Date", y = "Runoff (mm)") +
+  theme_bw()
+ggplotly(runoff_plot)
+
+
+
+
+ggplot(mu, aes(x = PRCP, y = OBS_RUN)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", color = "red") +
+  facet_wrap(~ID) +
+  labs(title = "Precipitation vs Runoff by Catchment", 
+       x = "Precipitation (mm)", y = "Runoff (mm)")
+
+
+
+
+ggplot(mu, aes(x = factor(MNTH), y = SWE)) +
+  geom_boxplot(fill = "lightblue") +
+  labs(title = "Monthly Snow Water Equivalent", 
+       x = "Month", y = "SWE (mm)")
+
+
+
+
+
+
+
+spring_mu <- mu[MNTH %in% 3:5] 
+spring_mu[, snowmelt := max(SWE, na.rm = TRUE) - SWE, by = .(ID, HYR)]
+
+ggplot(spring_mu, aes(x = snowmelt, y = OBS_RUN)) +
+  geom_point(aes(color = PET)) +
+  geom_smooth(method = "lm") +
+  labs(title = "Spring Snowmelt vs Runoff",
+       x = "Snowmelt (mm)", y = "Runoff (mm)",
+       color = "PET (mm)")
+
+
+
+
+ggplot(mu, aes(x = factor(MNTH), y = WB, fill = WB > 0)) +
+  geom_col() +
+  scale_fill_manual(values = c("red", "blue"), 
+                    labels = c("Deficit", "Surplus")) +
+  labs(title = "Monthly Water Balance", 
+       x = "Month", y = "Water Balance (mm)",
+       fill = "Status")
+
+
+
+
+
+
+ggplot(mu, aes(x = as.Date(paste(HYR, MNTH, "01", sep = "-")))) +
+  geom_line(aes(y = PRCP, color = "Precipitation")) +
+  geom_line(aes(y = OBS_RUN, color = "Runoff")) +
+  geom_line(aes(y = PET, color = "PET")) +
+  geom_col(aes(y = WB, fill = WB > 0), alpha = 0.3) +
+  scale_color_manual(values = c("blue", "darkgreen", "orange")) +
+  scale_fill_manual(values = c("red", "blue")) +
+  labs(title = "Hydrological Variables Over Time",
+       x = "Date", y = "Value (mm)",
+       color = "Variable", fill = "Water Balance")

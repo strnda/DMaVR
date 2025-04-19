@@ -1,0 +1,62 @@
+library(data.table)
+mu <- fst(path = "data_snipet.fst")
+mu <- as.data.table(x = mu)
+mu[, HYR := ifelse(MNTH %in% 10:12, YR + 1, YR)]
+mu[, .(Months = paste(unique(MNTH), collapse=",")), by = HYR][order(HYR)]
+
+
+rc_mu <- mu[, .(PRCP = sum(PRCP, na.rm = TRUE),
+                    OBS_RUN = sum(OBS_RUN, na.rm = TRUE)), 
+                by = ID][, RC := OBS_RUN / PRCP]
+
+
+
+
+rc_mu[, RC_class := cut(RC, 
+                          breaks = quantile(RC, probs = seq(0, 1, 0.2)),
+                          labels = c("Very Low", "Low", "Moderate", "High", "Very High"),
+                          include.lowest = TRUE)]
+
+sel_catch <- rc_mu[, .SD[sample(.N, 1)], by = RC_class]
+sel_mu <- mu[ID %in% sel_catch$ID]
+
+
+
+
+
+
+monthly_wb <- sel_mu[, .(
+  mean_PRCP = mean(PRCP, na.rm = TRUE),
+  mean_PET = mean(PET, na.rm = TRUE),
+  mean_RUN = mean(OBS_RUN, na.rm = TRUE)), 
+  by = .(ID, HYR, MNTH)][, WB := mean_PRCP - mean_PET]
+
+annual_wb <- sel_mu[, .(
+  PRCP = sum(PRCP, na.rm = TRUE),
+  PET = sum(PET, na.rm = TRUE),
+  RUN = sum(OBS_RUN, na.rm = TRUE)), 
+  by = .(ID, HYR)][, WB := PRCP - PET]
+deficit_months <- monthly_wb[WB < 0]
+
+
+
+
+
+snow_analysis <- sel_mu[, .(
+  mean_SWE = mean(SWE, na.rm = TRUE),
+  max_SWE = max(SWE, na.rm = TRUE)), 
+  by = .(ID, HYR, MNTH)]
+
+snow_analysis[, snowmelt := max_SWE - mean_SWE]
+snow_runoff <- merge(snow_analysis, 
+                     monthly_wb[, .(ID, HYR, MNTH, mean_RUN)],
+                     by = c("ID", "HYR", "MNTH"))
+spring_cor <- snow_runoff[MNTH %in% 3:5, 
+                          .(correlation = cor(snowmelt, mean_RUN, use = "complete.obs")), 
+                          by = ID]
+
+
+
+
+print("Spring Snowmelt-Runoff Correlations:")
+print(spring_cor)
