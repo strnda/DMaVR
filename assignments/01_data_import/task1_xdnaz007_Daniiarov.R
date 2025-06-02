@@ -1,6 +1,8 @@
 #1. Download a zip (from website)
 url <- "https://www.hydroshare.org/resource/2cc1b6b57b1d4c9f8d67b6c3f790a6c5/data/contents/camels_us.zip"
 zip_file <- "camels_us.zip"
+extract_dir <- "camels_extracted"
+output_file <- "camels_model_new_cleaned.rds"
 download.file(url, destfile = zip_file, mode = "wb")
 
 #2. Unzip files
@@ -18,6 +20,12 @@ model_files <- list.files(
 loaded_data <- lapply(model_files, function(file) {
   read.table(file, header = TRUE)
 })
+
+# Combine all model output files 
+combined_data <- do.call(rbind, loaded_data)
+
+# Save as CSV
+write.csv(combined_data, file = "camels_model_output.csv", row.names = FALSE)
 
 #5. Get info (as a file)
 cat("Imported", length(model_files), "model output files .\n")
