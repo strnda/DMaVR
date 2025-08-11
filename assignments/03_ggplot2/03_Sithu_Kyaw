@@ -1,0 +1,103 @@
+# Load required libraries
+library(data.table)
+library(ggplot2)
+library(plotly)
+library(ggExtra)
+library(mgcv)
+
+# --- Synthetic data setup
+set.seed(42)
+catchments <- paste0("C", 1:5)
+years <- 2000:2002
+months <- 1:12
+
+# Create all combinations
+dta_sel <- CJ(ID = catchments, YR = years, MNTH = months)
+
+# Add synthetic hydrological variables
+dta_sel[, PRCP := runif(.N, 0, 300)]
+dta_sel[, OBS_RUN := PRCP * runif(.N, 0.2, 0.8)]
+dta_sel[, PET := runif(.N, 10, 200)]
+dta_sel[, SWE := runif(.N, 0, 100)]
+
+# Hydrological year (Oct-Dec shift to next year)
+dta_sel[, HYR := ifelse(MNTH %in% c(10, 11, 12), YR + 1, YR)]
+
+# Aggregate monthly stats
+monthly_stats <- dta_sel[, .(
+  mean_PRCP = mean(PRCP),
+  mean_OBS_RUN = mean(OBS_RUN),
+  mean_PET = mean(PET),
+  mean_SWE = mean(SWE),
+  WB = mean(PRCP) - mean(PET)
+), by = .(HYR, ID, MNTH)]
+
+# --- Task 1: Time-series of monthly observed runoff ---
+p1 <- ggplot(monthly_stats, aes(x = MNTH, y = mean_OBS_RUN, color = factor(HYR), group = HYR)) +
+  geom_line() +
+  geom_point(data = monthly_stats[mean_OBS_RUN >= quantile(mean_OBS_RUN, 0.95)], 
+             aes(shape = "Top 5% runoff"), color = "red", size = 2) +
+  facet_wrap(~ ID) +
+  labs(title = "Monthly Observed Runoff by Hydrological Year",
+       x = "Month", y = "Mean Observed Runoff", color = "Hydrological Year") +
+  theme_minimal()
+
+ggplotly(p1)  # Interactive plot
+
+# --- Task 2: Precipitation vs Runoff with smooth loess ---
+p2 <- ggplot(dta_sel, aes(x = PRCP, y = OBS_RUN)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess") +
+  facet_grid(ID ~ HYR) +
+  labs(title = "Precipitation vs Runoff",
+       x = "Precipitation", y = "Observed Runoff") +
+  theme_minimal()
+
+print(p2)
+
+# --- Task 3: SWE violin plots ---
+p3 <- ggplot(dta_sel, aes(x = factor(MNTH), y = SWE)) +
+  geom_violin(fill = "lightblue", alpha = 0.6) +
+  geom_jitter(width = 0.15, size = 0.5, alpha = 0.5) +
+  facet_grid(ID ~ HYR) +
+  labs(title = "Monthly SWE Distribution",
+       x = "Month", y = "Snow Water Equivalent (SWE)") +
+  theme_minimal()
+
+print(p3)
+
+# --- Task 4: Snowmelt vs runoff colored by PET ---
+
+# Calculate snowmelt
+swe_monthly <- dta_sel[, .(mean_SWE = mean(SWE)), by = .(HYR, ID, MNTH)]
+max_swe <- swe_monthly[, .(max_SWE = max(mean_SWE)), by = .(HYR, ID)]
+swe_monthly <- merge(swe_monthly, max_swe, by = c("HYR", "ID"))
+swe_monthly[, snowmelt := pmax(max_SWE - mean_SWE, 0)]
+
+# Merge snowmelt with monthly stats
+snowmelt_runoff <- merge(monthly_stats, swe_monthly[, .(HYR, ID, MNTH, snowmelt)], 
+                         by = c("HYR", "ID", "MNTH"))
+
+p4 <- ggplot(snowmelt_runoff, aes(x = snowmelt, y = mean_OBS_RUN, color = mean_PET)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = FALSE, color = "black") +
+  scale_color_viridis_c(option = "plasma") +
+  labs(title = "Snowmelt vs Runoff colored by PET",
+       x = "Snowmelt", y = "Observed Runoff", color = "PET") +
+  theme_minimal()
+
+ggMarginal(p4, type = "histogram")  # Add marginal histograms
+
+# --- Task 5: Monthly water balance visualization ---
+
+monthly_stats[, surplus_deficit := ifelse(WB >= 0, "Surplus", "Deficit")]
+
+p5 <- ggplot(monthly_stats, aes(x = factor(MNTH), y = WB, fill = surplus_deficit)) +
+  geom_col() +
+  facet_grid(ID ~ HYR) +
+  scale_fill_manual(values = c("Surplus" = "steelblue", "Deficit" = "tomato")) +
+  labs(title = "Monthly Water Balance (PRCP - PET)",
+       x = "Month", y = "Water Balance", fill = "Status") +
+  theme_minimal()
+
+print(p5)
