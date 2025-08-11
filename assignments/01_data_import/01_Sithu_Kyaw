@@ -1,0 +1,63 @@
+# Increase timeout to allow for large file downloads
+options(timeout = 3600)
+
+# URL of dataset zip file
+dataset_url <- "https://gdex.ucar.edu/dataset/camels/file/basin_timeseries_v1p2_modelOutput_daymet.zip"
+
+# Local file paths
+zip_file <- "camels_basin_timeseries.zip"
+data_folder <- "camels_data"
+processed_file <- "model_data.rds"  # For saving processed data
+
+# Download the dataset only if zip file does not exist
+if (!file.exists(zip_file)) {
+  cat("Downloading dataset...\n")
+  download.file(dataset_url, zip_file, mode = "wb")
+} else {
+  cat("Dataset zip file already exists. Skipping download.\n")
+}
+
+# Unzip the data only if folder doesn't exist
+if (!dir.exists(data_folder)) {
+  cat("Unzipping dataset...\n")
+  unzip(zip_file, exdir = data_folder)
+} else {
+  cat("Data folder already exists. Skipping unzip.\n")
+}
+
+# Load processed data if available, else import and save
+if (file.exists(processed_file)) {
+  cat("Loading processed model data from file...\n")
+  model_data <- readRDS(processed_file)
+}
+else {
+  cat("Importing model output files...\n")
+  
+  # List all files inside data folder
+  all_files <- list.files(data_folder, recursive = TRUE, full.names = TRUE)
+  
+  # Filter model output files by pattern
+  model_files <- grep("model.*output.*\\.txt$", all_files, value = TRUE, ignore.case = TRUE)
+  
+  if (length(model_files) == 0) stop("No model output files found!")
+  
+  model_data <- list()
+  
+  # Import each model output file
+  for (file in model_files) {
+    dat <- tryCatch(read.table(file, header = TRUE, stringsAsFactors = FALSE), error = function(e) NULL)
+    if (!is.null(dat)) {
+      model_data[[basename(file)]] <- dat
+    }
+  }
+  
+  # Save imported data for faster reload next time
+  saveRDS(model_data, processed_file)
+  
+  cat("Imported", length(model_data), "model output files.\n")
+}
+
+if (length(model_data) > 0) {
+  cat("Example file:", names(model_data)[1], "\n")
+  print(head(model_data[[1]]))
+}
