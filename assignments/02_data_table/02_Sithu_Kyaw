@@ -1,0 +1,64 @@
+library(data.table)
+
+# --- Synthetic dataset creation ---
+set.seed(42)
+catchments <- paste0("C", 1:5)
+years <- 2000:2002
+months <- 1:12
+
+# All combinations of catchments, years, and months
+dta <- CJ(ID = catchments, YR = years, MNTH = months)
+
+# Add hydrological variables
+dta[, PRCP := runif(.N, 0, 300)]
+dta[, OBS_RUN := PRCP * runif(.N, 0.2, 0.8)]
+dta[, PET := runif(.N, 10, 200)]
+dta[, SWE := runif(.N, 0, 100)]
+
+# Assign Hydrological Year (HYR): Oct-Dec count for next year
+dta[, HYR := ifelse(MNTH %in% 10:12, YR + 1, YR)]
+
+# --- Runoff Coefficient calculation ---
+rc_dt <- dta[, .(total_PRCP = sum(PRCP),
+                 total_RUN = sum(OBS_RUN)), by = ID]
+rc_dt[, RC := total_RUN / total_PRCP]
+
+# Classify catchments by RC quantiles
+breaks <- quantile(rc_dt$RC, probs = seq(0, 1, 0.2))
+rc_dt[, RC_class := cut(RC, breaks = breaks,
+                        labels = c("Very Low", "Low", "Moderate", "High", "Very High"),
+                        include.lowest = TRUE)]
+
+# Randomly select one catchment from each RC_class
+set.seed(123)
+selected <- rc_dt[, .SD[sample(.N, 1)], by = RC_class]
+
+# Filter data for selected catchments
+dta_sel <- dta[ID %in% selected$ID]
+
+# Calculate monthly means and water balance
+monthly_stats <- dta_sel[, .(
+  mean_PRCP = mean(PRCP),
+  mean_PET = mean(PET),
+  mean_RUN = mean(OBS_RUN),
+  WB = mean(PRCP - PET)
+), by = .(HYR, ID, MNTH)]
+
+# Calculate maximum SWE per HYR and ID
+max_swe <- dta_sel[, .(max_SWE = max(SWE)), by = .(HYR, ID)]
+
+# Calculate snowmelt as difference between max SWE and SWE
+dta_sel <- merge(dta_sel, max_swe, by = c("HYR", "ID"))
+dta_sel[, snowmelt := pmax(max_SWE - SWE, 0)]
+
+# Merge snowmelt with monthly runoff data
+snowmelt_runoff <- merge(monthly_stats, 
+                         dta_sel[, .(HYR, ID, MNTH, snowmelt)], 
+                         by = c("HYR", "ID", "MNTH"), all.x = TRUE)
+
+# Correlation between snowmelt and runoff for spring months (Mar-May)
+spring <- snowmelt_runoff[MNTH %in% 3:5]
+
+cor_results <- spring[, .(correlation = cor(snowmelt, mean_RUN, use = "complete.obs")), by = ID]
+
+print(cor_results)
