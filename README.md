@@ -27,7 +27,7 @@ require(curl)
 dir.create(path = "./data/",
            showWarnings = FALSE,
            recursive = TRUE)
-curl_download(url = "https://github.com/strnda/PED/archive/refs/heads/main.zip", 
+curl_download(url = "https://github.com/strnda/DMaVR/archive/refs/heads/main.zip", 
               destfile = "./data/test.zip")
 
 ## unzip the archive
@@ -42,7 +42,7 @@ Or manualy download the archive… ![](figs/download.png)
 
 ``` bash
 ## using bash (git) commands
-git clone https://github.com/strnda/PED.git
+git clone https://github.com/strnda/DMaVR.git
 
 ## or with ssh
 git@github.com:strnda/DMaVR.git
