@@ -5,7 +5,7 @@
 
 Collection of scripts and data for the **DMaVR** class
 
-**Valid (2025-10-1)
+**Valid (2026-02-13)
 [Datacamp](https://www.datacamp.com/groups/shared_links/015a2cd543ee041a76271b79bb5fabcffdd2218af701771165671a3ba4df0696)
 invite link**
 
