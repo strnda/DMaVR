@@ -83,7 +83,23 @@ nz[, id := 1:.N,
 # 
 # dta
 
+## HW
+
 ## merge nz back with zeroes without use of the original dataset.
+
+?data.table::merge
+
+dt <- data.table(VALUE = 0,
+                 DT = seq(from = as.POSIXct(x = "2018-01-01 00:00:00"),
+                          to = as.POSIXct(x = "2026-01-01 00:00:00"),
+                          by = "hour"))
+
+## read up on these functions
+
+?fread()
+?fwrite()
+
+?frollapply()
 
 ?data.table::merge
 
