@@ -186,3 +186,5 @@ dta_out <- do.call(what = rbind,
 saveRDS(object = dta_out,
         file = "~/Desktop/prec_data.rds")
 
+## data available @ https://owncloud.cesnet.cz/index.php/s/Q8n72Ais4LCKg40
+
