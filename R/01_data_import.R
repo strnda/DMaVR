@@ -125,3 +125,64 @@ read.table(file = paste0(base_url, yr, "/", fls[42]),
 
 ## import all prec data for al available years...
 ## save it as an *.rds
+
+base_url <- "https://opendata.chmi.cz/meteorology/climate/historical_csv/data/1hour/precipitation/"
+
+dta_all <- list()
+
+for (yr in 2000:2026) {
+  
+  e <- try(
+    expr = {
+      
+      res <- readLines(con = paste0(base_url, yr, "/"))
+      fls <- sapply(X = strsplit(x = res[grep(pattern = "\\.csv",
+                                              x = res)], 
+                                 split = '"'), 
+                    FUN = "[[",
+                    index = 2)
+      
+      dta_yr <- lapply(
+        X = fls,
+        FUN = function(x) {
+          
+          dta <- read.table(file = paste0(base_url, yr, "/", x), 
+                            header = TRUE, 
+                            sep = ",")
+          
+          dta$STATION <- as.factor(x = dta$STATION)
+          dta$ELEMENT <- as.factor(x = dta$ELEMENT)
+          dta$DT <- as.POSIXct(x = gsub(pattern = "T|Z",
+                                        replacement = " ",
+                                        x = dta$DT),
+                               format = "%Y-%m-%d %H:%M ")
+          dta
+        }
+      )
+      
+      dta_yr <- do.call(what = rbind,
+                        args = dta_yr)
+    },
+    silent = TRUE
+  )
+  
+  if (inherits(x = e, 
+               what = "try-error")) {
+    
+    next
+  } else {
+    
+    dta_all[[yr]] <- dta_yr
+  }
+}
+
+dta_all <- dta_all[which(x = !sapply(X = dta_all, 
+                                     FUN = is.null))]
+
+dta_out <- do.call(what = rbind,
+                   args = dta_all[sapply(X = dta_all, 
+                                         FUN = is.list)])
+
+saveRDS(object = dta_out,
+        file = "~/Desktop/prec_data.rds")
+
