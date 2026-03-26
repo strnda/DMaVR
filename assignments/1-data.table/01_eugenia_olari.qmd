@@ -1,0 +1,400 @@
+---
+title: "data.table project"
+author: "Eugenia Olari"
+date: "2026-03-24"
+format: html
+---
+
+## 1. Load data adn convert to data.table
+
+```{r}
+## load data
+dta <- readRDS(file = "data/prec_data.rds")
+
+## load package
+library(data.table)
+
+## convert to data.table
+dta_t <- as.data.table(x = dta)
+print(head(dta_t))
+```
+
+
+
+## 2. Basic inspection
+
+```{r}
+## check classes
+class(x = dta)
+class(x = dta_t)
+```
+
+```{r}
+## show first rows
+head(x = dta_t)
+```
+
+```{r}
+## object sizes
+object.size(x = dta)
+object.size(x = dta_t)
+```
+
+```{r}
+## column names
+names(x = dta_t)
+```
+
+```{r}
+## dimensions - number of rows and columns
+nrow(x = dta_t)
+ncol(x = dta_t)
+```
+
+```{r}
+## column types
+str(object = dta_t)
+```
+
+```{r}
+## check for missing datetimes
+sum(is.na(x = dta_t$DT))
+```
+
+```{r}
+## check QUALITY values
+table(dta_t$QUALITY, useNA = "always")
+```
+
+```{r}
+## check FLAG values
+table(dta_t$FLAG, useNA = "always")
+```
+
+Based on the inspection above:
+
+- **Identifier variables**: `STATION`, `DT` (datetime), `ELEMENT` — these uniquely identify
+each measurement. `STATION` has 431 levels, `ELEMENT` has only one level (`SRA1H`).
+
+- **Categorical variables**: `STATION` and `ELEMENT` are factors. `FLAG` is character,
+`QUALITY` is numeric.
+
+- **Variables needing cleaning**: `X` is entirely `NA` and will be dropped. `FLAG` has
+136,458 empty strings and 56,382 `"Z"` codes worth checking. `QUALITY` has 128,245 rows
+with code `3` and 37,002 with code `4`, indicating lower quality measurements.
+
+
+
+
+## 3. Filtering and summaries
+
+```{r}
+## filter VALUE > 0
+nz <- dta_t[VALUE > 0, .(STATION, DT, VALUE, ELEMENT, FLAG, QUALITY)]
+```
+
+```{r}
+## summary by station
+nz[, .(mean = mean(x = VALUE),
+       sd   = sd(x = VALUE),
+       iqr  = IQR(x = VALUE),
+       min  = min(x = VALUE),
+       max  = max(x = VALUE)),
+   by = STATION][order(-mean)]
+```
+
+```{r}
+## summary by station and year of DT
+nz[, .(mean = mean(x = VALUE),
+       sd   = sd(x = VALUE),
+       iqr  = IQR(x = VALUE),
+       min  = min(x = VALUE),
+       max  = max(x = VALUE)),
+   by = .(STATION, year(x = DT))][order(-mean)] # do the grouped summary
+```
+
+The station-level summary covers 431 stations with non-zero precipitation records. 
+The highest mean is at station `0-20000-0-11787` (1.04 mm/hr), the lowest at `0-20000-0-11464` (0.56 mm/hr). 
+The maximum single-hour value of **64.0 mm** at station `0-203-0-11721` is a clear outlier.
+
+When grouped by year, station `0-20000-0-11787` in **2020** has the highest mean (1.33mm/hr). 
+Station `0-203-0-11721` in 2024 has the largest standard deviation (3.50), driven by the 64.0 mm extreme value.
+
+
+
+
+## 4. Duplicate analysis
+
+```{r}
+## count exact duplicate rows
+sum(duplicated(x = dta_t))
+```
+The dataset contains **2846 exact duplicate rows**.
+
+```{r}
+## show examples of exact duplicates
+dta_t[duplicated(x = dta_t) | duplicated(x = dta_t, fromLast = TRUE)][1:10]
+```
+All duplicates share the timestamp `2018-03-25 01:00:00` — a daylight saving time clock change date, where 01:00 occurs twice. 
+Since both rows in each pair have identical values, removing one copy with `unique()` is safe.
+
+```{r}
+## define logical duplicate: same station, dt, and element
+## count logical duplicates using data.table
+dt_dup <- dta_t[, .(n = .N),
+                by = .(STATION, DT, ELEMENT)]
+```
+
+```{r}
+## how many key combinations appear more than once
+dt_dup[n > 1, .N]
+```
+
+```{r}
+## show examples
+dt_dup[n > 1][order(-n)][1:10]
+```
+
+There are **2922 logical duplicates** — `STATION`, `DT`, `ELEMENT` combinations appearing
+more than once. All have `n = 2` and all share the same DST timestamp.
+
+
+
+## 5. Cleaning using :=
+
+```{r}
+## drop stray X column
+dta_t[, X := NULL]
+```
+The X column contained only NA values across all 25.7 million rows and carries no information
+
+
+```{r}
+## drop rows where DT is NA
+dta_t <- dta_t[!is.na(x = DT)]
+sum(is.na(x = dta_t$DT))
+```
+No `NA` values exist in `DT` 
+
+```{r}
+## flag suspicious values: negative precipitation is physically impossible
+dta_t[, suspicious := VALUE < 0]
+dta_t[suspicious == TRUE, .N]
+```
+No negative `VALUE` entries found 
+
+```{r}
+## flag low quality rows
+dta_t[, low_quality := QUALITY %in% c(3, 4)]
+dta_t[low_quality == TRUE, .N]
+```
+**165247 rows** have `QUALITY` code `3` or `4` and are flagged as `low_quality`. 
+These rows are kept but we will kepp them in mind for cautious use.
+
+```{r}
+## remove exact duplicates
+dta_t <- unique(x = dta_t)
+nrow(x = dta_t)
+```
+After deduplication the dataset contains **25725335 rows**, down from 25728181 - a reduction of 2846 duplicate rows.
+
+
+## 6. Renaming and column work
+
+```{r}
+## rename DT to DATETIME for clarity
+setnames(x = dta_t,
+         old = c("DT"),
+         new = c("DATETIME"),
+         skip_absent = TRUE)
+
+## create year column — useful for temporal grouping
+dta_t[, yr := year(x = DATETIME)]
+
+## create row id within each station
+dta_t[, row_id := 1:.N,
+      by = STATION]
+
+## remove row_id helper column after inspection
+dta_t[, row_id := NULL]
+names(x = dta_t)
+```
+
+`DT` is renamed to `DATETIME` for clarity using `setnames()`. 
+A `yr` column is added for fast year-level grouping. 
+A `row_id` helper column is created within each station and immediately removed, it was used only to verify row ordering.
+
+
+
+## 7.Station summary
+
+```{r}
+## station summary
+st_sum <- dta_t[, .(
+  n_rows = .N,
+  mean_val = mean(x = VALUE, na.rm = TRUE),
+  sd_val = sd(x = VALUE, na.rm = TRUE),
+  min_val = min(x = VALUE, na.rm = TRUE),
+  max_val = max(x = VALUE, na.rm = TRUE),
+  n_nonzero = sum(VALUE > 0, na.rm = TRUE),
+  n_suspicious = sum(suspicious == TRUE, na.rm = TRUE),
+  n_flagged = sum(!is.na(x = FLAG) & FLAG != "", na.rm = TRUE),
+  n_low_qual = sum(low_quality == TRUE, na.rm = TRUE)
+), by = STATION]
+```
+
+```{r}
+## Q1: most problematic (most flagged + low quality)
+st_sum[order(-n_flagged)][1:5]
+
+## Q2: highest non-zero precipitation
+st_sum[order(-mean_val)][1:5]
+
+## Q3: most records
+st_sum[order(-n_rows)][1:5]
+
+## Q4: most suspicious rows
+st_sum[order(-n_suspicious)][1:5]
+
+```
+
+## 8. Element summary
+
+```{r}
+## element summary
+el_sum <- dta_t[, .(
+  n_rows = .N,
+  n_stations = uniqueN(x = STATION),
+  mean_val = mean(x = VALUE, na.rm = TRUE),
+  sd_val = sd(x = VALUE, na.rm = TRUE),
+  prop_missing = mean(x = is.na(x = VALUE)),
+  n_flagged = sum(!is.na(x = FLAG) & FLAG != "", na.rm = TRUE),
+  n_low_quality = sum(low_quality  == TRUE, na.rm = TRUE)
+), by = ELEMENT]
+
+## view element summary
+el_sum[order(prop_missing)]
+```
+
+Since `ELEMENT` has only one level (`SRA1H`), the summary contains a single row.
+`SRA1H` covers all 431 stations and 25725335 rows. 
+The mean value is 0.081 mm/hr across all records (including zeros), with a proportion of missing values of 0.0014 - very low. There are 192840 flagged rows and 165239 low quality rows.
+
+Since there is only one element type, a cross-element comparison is not possible.
+`el_sum` serves here as a data integrity check rather than a comparative analysis.
+All quality and reliability questions therefore fall to the station level, which was covered in the previous section.
+
+
+
+## 10. Merge task
+
+```{r}
+## rebuild nz from cleaned data (non-zero values only)
+nz <- dta_t[VALUE > 0]
+
+## create helper table: a regular hourly sequence with VALUE = 0
+## this represents the "background" — all hours in the study period
+dt <- data.table(VALUE = 0,
+                 DATETIME = seq(from = as.POSIXct(x = "2018-01-01 00:00:00"),
+                                to = as.POSIXct(x = "2026-01-01 00:00:00"),
+                                by = "hour"))
+
+## merge: left join of hourly sequence onto observed non-zero data
+## rows in dt that have no matching observation keep VALUE = 0
+merged <- merge(x = dt,
+                y = nz[, .(DATETIME, VALUE, STATION)],
+                by = "DATETIME",
+                all.x = TRUE)
+
+## inspect merged result
+head(x = merged)
+nrow(x = merged)
+```
+
+The helper table `dt` contains a complete hourly sequence from 2018 to 2026 **70129 hours** in total. 
+Each row has `VALUE = 0`, representing "no recorded precipitation" as a baseline for every hour in the study period.
+
+After the left join, `merged` has **2716679 rows**, which is larger than `dt` because multiple stations can match the same hour.
+
+**What the helper table represents**: a complete time grid covering the full study period. 
+Every hour gets a baseline `VALUE = 0`.
+
+**How the merge works**: `nz`, aka non-zero observations, is joined onto `dt` using `DATETIME` as the key.
+Hours with a real observation get the actual value filled in via `VALUE.y`. 
+Hours with no matching observation keep `VALUE = 0` from `dt` and show `NA` in `VALUE.y` and `STATION`. 
+All hours in the grid are preserved because we use `all.x = TRUE`.
+
+**Why this is useful**: it produces a gapless time series, making it easy to detect missing observation periods or compute time-averaged means without gaps distorting the results.
+
+
+
+## 11. Reshape task
+
+```{r}
+## create a small station-year summary for reshaping
+st_yr <- dta_t[VALUE > 0,
+               .(mean_val = mean(x = VALUE, na.rm = TRUE)),
+               by = .(STATION, yr)]
+
+## reshape to wide: one row per station, one column per year
+wide <- dcast(data = st_yr,
+              formula = STATION ~ yr,
+              value.var = "mean_val")
+
+## inspect wide format
+head(x = wide)
+```
+
+
+```{r}
+## reshape back to long
+long <- melt(data = wide,
+             id.vars = "STATION",
+             variable.name = "year",
+             value.name = "mean_val")
+
+## inspect long format
+head(x = long)
+```
+
+`dcast()` reshapes the data into wide format — one row per station, one column per year. 
+This makes it easy to compare mean precipitation across years side by side.
+
+The output shows stable values across 2018–2024 for most stations, with a slight increase visible in 2024.
+
+`melt()` converts the wide table back to long format, which is better suited for further grouped analysis or plotting.
+
+
+
+## 12.  Final conclusions
+**Main data problems:**
+- `X` column was entirely `NA` — probbaly it was an artifact from data export
+- 2846 duplicate rows caused by a DST clock change on `2018-03-25 01:00:00`
+- 165247 rows with low quality codes (`3` or `4`)
+- 192840 flagged rows across `FLAG` codes `""` and `"Z"`
+
+**What was cleaned:**
+- `X` column dropped
+- Exact duplicates removed with `unique()`
+- `low_quality` and `suspicious` flags added for downstream filtering
+- `DT` renamed to `DATETIME`, `yr` column added
+
+**Uncertain decisions:**
+- Low quality rows were flagged but kept — whether to exclude them depends
+on the analysis
+- Empty string `FLAG == ""` rows were kept — unclear if they represent a
+logging error or valid unflagged observations
+
+**Most suspicious:**
+- Station `0-20000-0-11747` had the most flagged rows - 16741
+- Station `0-203-0-11721` had the most extreme single value — 64.0 mm in
+one hour, over 20 standard deviations above its mean
+- Since `ELEMENT` has only one level, all quality concerns are at the
+station level
+
+**Most useful `data.table` operations:**
+- `:=` for adding and removing columns in-place
+- `by` with `.N` for grouped summaries and duplicate detection
+- `dcast()` and `melt()` for reshaping
+- `merge()` with `all.x = TRUE` for building a gapless time series
+- `setnames()` for safe column renaming
