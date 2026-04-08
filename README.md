@@ -5,8 +5,8 @@
 
 Collection of scripts and data for the **DMaVR** class
 
-**Valid (2026-02-13)
-[Datacamp](https://www.datacamp.com/groups/shared_links/015a2cd543ee041a76271b79bb5fabcffdd2218af701771165671a3ba4df0696)
+**Valid (2026-04-08)
+[Datacamp](https://www.datacamp.com/groups/shared_links/6b75b4c8cc0f74774363b054e303ecaa820837a3404c15d5eef8b338034640ac)
 invite link**
 
 ## How to get the content of tis repo to your local machine
