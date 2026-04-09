@@ -1,0 +1,304 @@
+---
+title: "data.table project"
+author: The Quyet Nguyen
+format: html
+---
+
+## Load data
+
+Load data from the prec_data.rds file and convert to data table
+
+```{r}
+dta <- readRDS(file = "prec_data.rds")
+
+library(data.table)
+
+dta_t <- as.data.table(x = dta)
+```
+
+## Basic inspection
+
+Show class of dta and dta_t
+
+```{r}
+dta_c <- class(x = dta)
+dta_c
+
+dta_t_c <- class(x = dta_t)
+dta_t_c
+```
+
+Show object size of dta and dta_t class
+
+```{r}
+object.size(x = dta_c)
+
+object.size(x = dta_t_c)
+```
+
+Show first rows of dta and dta_t
+
+```{r}
+head(x = dta)
+
+head(x = dta_t)
+```
+
+The values in the first rows suggest that the identifiers of the values in the dataset are a combination of STATION, ELEMENT and DT columns.
+
+The values in the STATION and ELEMENT columns suggest that these variables are categorical.
+
+The values in the columns FLAG and X in the first rows are NA, this suggests these variables may need cleaning.
+
+Show column names of dta and dta_t
+
+```{r}
+colnames(x = dta)
+
+colnames(x = dta_t)
+```
+
+Show number of rows in dta and dta_t
+
+```{r}
+nrow(x = dta)
+
+nrow(x = dta_t)
+```
+
+Show number of columns in dta and dta_t
+
+```{r}
+ncol(x = dta)
+
+ncol(x = dta_t)
+```
+
+## Filtering and summaries
+
+Select only the rows with VALUE greater than 0 and calculate their summary statistics
+
+```{r}
+nz <- dta_t[VALUE > 0, .(STATION, DT, VALUE)]
+
+nz[, .(mean = mean(x = VALUE, na.rm = TRUE),
+       sd = sd(x = VALUE, na.rm = TRUE),
+       iqr = IQR(x = VALUE, na.rm = TRUE),
+       min = min(x = VALUE, na.rm = TRUE),
+       max = max(x = VALUE, na.rm = TRUE)),
+   by = .(STATION, year(x = DT))]
+
+```
+
+## Duplicate analysis
+
+As mentioned in the previous task, the suspected identifiers of the data table are STATION, ELEMENT and DT columns.
+
+I group the dataset by these columns and find which records are duplicate by filtering out the groups with more than 1 record. The column N is the number of duplicate records in each group
+
+```{r}
+grouped <- dta_t[, .(.N, VALUE), by = .(STATION, ELEMENT, DT)]
+
+dup_rows <- grouped[N > 1]
+```
+
+I check the some duplicate records in the dataset and the number of duplicate records with the following commands:
+
+```{r}
+head(x = dup_rows)
+
+sum(dup_rows[, N])
+
+```
+
+To decide whether the duplicate should be removed, I will check the VALUE column of the duplicate records in each group:
+
+```{r}
+grouped_with_value <- dta_t[, .N, by = .(STATION, ELEMENT, DT, VALUE)]
+
+```
+
+then I examine the records
+
+```{r}
+grouped_with_value[N == 1]
+
+grouped_with_value[N == 1][is.na(VALUE)]
+```
+
+The records with same value in STATION, ELEMENT, DT, VALUE appear to be duplicate and should be removed, especially when in a group of STATION, ELEMENT, DT one record has NA in VALUE column and second record has a valid number, then the record with NA VALUE should be removed.
+
+## Cleaning
+
+First, I check the values of the FLAG and QUALITY column in the dataset.
+
+```{r}
+
+dta_t[, .N, by = .(FLAG, QUALITY)]
+
+```
+
+As stated above, the rows having same STATION, ELEMENT, DT, VALUE are considered duplicated. I create a new data table with unique rows from dta_t
+
+```{r}
+dta_t <- unique(dta_t, by = c("STATION", "ELEMENT", "DT", "VALUE"))
+
+```
+
+I check the dataset to verify whether there are NA values in the VALUE column, then I create a new data table to have only non-NA values in the VALUE column.
+
+```{r}
+
+dta_t[is.na(VALUE)]
+
+dta_t <- dta_t[!is.na(VALUE)]
+
+```
+
+I remove X column from the data table dta_t and add ID column.
+
+```{r}
+dta_t[, X := NULL]
+
+dta_t <- dta_t[, ID := 1:.N, by = STATION]
+```
+
+The possible values in FLAG column is NA, "", Z, I create a new column FLAG_DESC to assign a descriptive name to the values
+
+```{r}
+dta_t[, FLAG_DESC := "Z"]
+
+dta_t[is.na(FLAG), FLAG_DESC := "UNDEFINED"]
+
+dta_t[FLAG == "", FLAG_DESC := "EMPTY"]
+```
+
+I rename the DT column to DATETIME and create column YEAR with values taken from the year of DATETIME.
+
+```{r}
+setnames(x = dta_t,
+         old = c("DT"),
+         new = c("DATETIME"),
+         skip_absent = TRUE)
+
+dta_t[, YEAR := year(DATETIME)]
+
+```
+
+## Station summary
+
+```{r}
+
+st_sum <- dta_t[, .(
+  .N,
+  mean = mean(VALUE, na.rm = TRUE),
+  sd = sd(VALUE, na.rm = TRUE),
+  min = min(VALUE, na.rm = TRUE),
+  max = max(VALUE, na.rm = TRUE),
+  non_zero = sum(ifelse(VALUE != 0, 1, 0)),
+  na_flagged = sum(ifelse(FLAG_DESC == "UNDEFINED", 1, 0)),
+  empty_flagged = sum(ifelse(FLAG_DESC == "EMPTY" , 1, 0))
+  ), by = STATION]
+
+st_sum
+
+```
+
+Stations seem most problematic:
+
+```{r}
+
+```
+
+Stations have the highest non-zero precipitation:
+
+```{r}
+st_sum[which.max(max)]
+```
+
+Stations have the most records:
+
+```{r}
+st_sum[which.max(N)]
+```
+
+Stations have the most suspicious rows:
+
+```{r}
+
+```
+
+## Element summary
+
+```{r}
+el_sum <- dta_t[, .(
+  ELEMENT,
+  .N,
+  mean = mean(VALUE, na.rm = TRUE),
+  sd = sd(VALUE, na.rm = TRUE)
+  ), by = ELEMENT]
+
+el_sum
+```
+
+ELEMENT seems most reliable, ELEMENT seems least reliable, Different ELEMENTs seem to have different scales, ELEMENT would you trust most for further analysis - there is only one element in the data set.
+
+## Merge task
+
+First, I verify the period covered by the prec_data.rds data set
+
+```{r}
+dta_t[which.min(DATETIME)]
+
+dta_t[which.max(DATETIME)]
+
+```
+
+Then I create a table covering every hours of the period
+
+```{r}
+dt <- data.table(VALUE = 0,
+                 DT = seq(from = as.POSIXct(x = "2018-01-01 00:00:00"),
+                          to = as.POSIXct(x = "2024-12-31 23:00:00"),
+                          by = "hour"))
+```
+
+In the filtered non-zero data, I removed the rows with zero value in the VALUE column. By merging nz object to newly created dt object, I create a data set covering the whole period including when the rainfall is zero. The following command merge nz object to dt object, the result is a data table containing all DATETIME from dt object, and precipitation data from nz object where DT is available.
+
+```{r}
+merge(x = dt, y = nz, by = "DT", all.x = TRUE)
+```
+
+This is useful when we want to distribution a dataset where default values (zero, NA...) are omitted to reduce the size of the dataset, and then users can reproduce the whole period of the dataset by filling with the default values.
+
+## Reshape task
+
+I use dcast to reshape dta_t object to group by ID and DATETIME for each STATION:
+
+```{r}
+dta_wide <- dcast(data = dta_t,
+                  formula = ID + DATETIME ~ STATION,
+                  value.var = "VALUE")
+
+dta_wide
+```
+
+The result show many NA values, indicating the dta_t object doesn't cover every hour in every station.
+
+## Final conclusions
+
+The main data problems - the dataset not covering every time step in the period, this may make the comparison of statistics summary of the stations unreliable.
+
+What you cleaned - column X and duplicate records were removed
+
+What decisions were uncertain - there is only one ELEMENT in the dataset, this makes Element summary task a bit unclear and hard to answer the questions in the task.
+
+Which station or element looked most suspicious - there is only one element in the dataset which makes it the most suspicious. The station **0-203-0-20301053301** have least number of non-zero values (~2/3 of the second least number of non-zero values) which is also suspicious here.
+
+```{r}
+st_sum[which.min(non_zero)]
+
+st_sum[STATION != "0-203-0-20301053301"][which.min(non_zero)]
+```
+
+What data.table operations were most useful - operation \[i, j, by\] enables filtering, add/remove columns, grouping which cover majority of work required for table-like data set.
