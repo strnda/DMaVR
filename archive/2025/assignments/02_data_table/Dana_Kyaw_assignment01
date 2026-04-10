@@ -1,0 +1,204 @@
+## Data Table Assignment
+## Dana Kyaw
+
+
+#part01
+dta <- readRDS(file = "prec_data.rds")
+
+library(data.table)
+
+## convert to data table
+dta_t <- as.data.table(x = dta)
+
+
+
+#part02- basic inspection
+
+class(x = dta)
+class(x = dta_t)
+
+head(dta_t)
+tail(dta_t)
+
+object.size(x = dta_t)
+object.size(x = dta)
+colnames(dta_t)
+nrow(dta_t)
+ncol(dta_t)
+
+### STATION AND ELEMENT are identifiers
+### DT is datetime
+### FLAG and Quality may need checking 
+### X is empty
+
+
+#part03 - filtering 
+
+nz <- dta_t[VALUE > 0, .(STATION, DT, VALUE)]
+
+nz[, .(mean = mean(x = VALUE),
+       sd = sd(x = VALUE),
+       iqr = IQR(x = VALUE),
+       min = min(x = VALUE),
+       max = max(x = VALUE)),
+   by = STATION]        
+
+nz[, .(mean = mean(x = VALUE),
+       sd = sd(x = VALUE),
+       iqr = IQR(x = VALUE),
+       min = min(x = VALUE), 
+       max = max(x = VALUE)),
+   by = .(STATION, year(x = DT))]
+
+
+##part04 - duplicate analysis
+
+sum(duplicated(dta_t))  ## there are 2846 duplicate rows
+dta_t[duplicated(x = dta_t)]
+
+dum <- dta_t[, .(n = .N),
+             by = .(STATION, DT)]
+
+dum[n > 1, .N]
+## There are 2922 duplicates
+
+dum[n > 1][1:10]
+
+##duplicates with same station and same time
+
+
+
+
+
+#part05 - Cleaning
+
+View(dta_t)
+
+dta_t[, X := NULL] ## REMOVE x column
+##dta_t[, year := NULL]
+##dta_t[, row_id := NULL]
+
+dta_t[, missing_value := is.na(x = VALUE)] ##missing precipitation
+##dta_t[, negative_value := VALUE < 0]       ##negative precipitation
+##dta_t[, flag_value := !is.na(x = FLAG)]    ##flag
+
+dta_t <- unique(x = dta_t) ## remove exact duplicates
+
+nrow(x = dta_t)
+
+pre99 <- dta_t[VALUE > 0, quantile(x = VALUE,
+                                   probs = 0.99,
+                                   na.rm = TRUE)]
+
+dta_t[, extreme_value := VALUE > pre99]
+
+
+##part06 - Renaming
+
+
+setnames(x = dta_t,
+         old = c("QUALITY"),
+         new = c("QTY"),
+         skip_absent = TRUE)
+
+setnames(x = dta_t,
+         old = c("FLAG"),
+         new = c("FLG"),
+         skip_absent = TRUE)
+
+
+dta_t[, yr := year(x = DT)]
+dta_t[, mo := month(x = DT)]
+
+##helper column
+dta_t[, row_id := 1:.N,
+      by = STATION]
+
+dta_t[, row_id := NULL]
+
+
+##part07 --Station summary
+
+st_sum <- dta_t[, .(n_rows = .N,
+                     mean_val = mean(x = VALUE, na.rm = TRUE),
+                     sd_val = sd(x = VALUE, na.rm = TRUE),
+                     min_val = min(x = VALUE, na.rm = TRUE),
+                     max_val = max(x = VALUE, na.rm = TRUE),
+                     n_nonzero = sum(VALUE > 0, na.rm = TRUE),
+                     n_missing = sum(missing_value),
+                     ##n_flagged = sum(flag_value, na.rm = TRUE),
+                     n_extreme = sum(extreme_value, na.rm = TRUE)),
+                 by = STATION]
+
+st_sum[order(-n_rows)]
+##st_sum[order(-n_flagged)]
+st_sum[order(-n_extreme)]
+st_sum[order(-mean_val)]
+
+
+
+##part08 - element summary
+
+el_sum <- dta_t[, .(n_rows = .N,
+                    n_stations = uniqueN(x = STATION),
+                    mean_val = mean(x = VALUE, na.rm = TRUE),
+                    sd_val = sd(x = VALUE, na.rm = TRUE),
+                    prop_missing = mean(x = is.na(x = VALUE)),
+                    ##n_flagged = sum(flag_value, na.rm = TRUE),
+                    n_questionable = sum(QTY > 0,
+                                         na.rm = TRUE)),
+                by = ELEMENT]
+
+el_sum
+
+
+
+
+## part09 and 10 - Merge task
+
+dt<-data.table( VALUE=0 ,
+                DT= seq(from = as.POSIXct(x="2018-01-01 00:00:00"),
+                        to = as.POSIXct(x="2026-01-01 00:00:00"),
+                        by = "hour"))
+
+stm_nz <- nz[STATION == nz$STATION[1]]
+
+merg <- merge( x=dt,
+             y=stm_nz[, .(DT,VALUE)],
+             by="DT",
+             all.x=TRUE)
+
+head(x = merg)
+
+setnames(x = merg,
+         old = c("DT"),
+         new = c("DATE_TIME"),
+         skip_absent = TRUE)
+
+View(nz)
+View(dt)
+
+
+
+## part11 - Reshape
+
+dta_t[, year := as.integer(format(x = DT, "%Y"))]
+head(dta_t)
+dta_long <- melt(dta_t,
+                 id.vars = c("STATION", "DT", "QTY"),
+                 measure.vars = c("VALUE", "extreme_value"),
+                 variable.name = "value_type",
+                 value.name = "prec_value")
+
+
+
+
+## part12 -  Final Discussion 
+
+## Main Problem : There are so many data that were missing and also X column was empty and there are so many duplicates data
+## FLAG and QUALITY were mostly empty
+## Cleaned : Duplicated data
+## Uncertain about logical duplicates and also about the missing values
+## The most useful operations is  ":="
+
+
