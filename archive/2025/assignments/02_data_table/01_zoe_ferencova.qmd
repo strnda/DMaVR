@@ -1,0 +1,472 @@
+---
+title: "Zoe Ferencova - data.table project"
+format: html
+---
+
+## Load data
+
+```{r}
+## load data
+dta <- readRDS(file = "./data/prec_data.rds")
+
+## load package
+library(data.table)
+library(ggplot2)
+
+## convert to data.table
+dta_t <- as.data.table(x = dta)
+```
+
+## Basic inspection
+
+```{r}
+## classes
+class(x = dta)
+class(x = dta_t)
+```
+
+```{r}
+## first rows
+head(x = dta_t)
+```
+
+```{r}
+## size of both objects
+object.size(x = dta)
+object.size(x = dta_t)
+```
+
+```{r}
+## column names, number of rows, number of columns
+names(x = dta_t)
+nrow(x = dta_t)
+ncol(x = dta_t)
+```
+
+```{r}
+## column types and summary
+str(object = dta_t)
+summary(object = dta_t)
+```
+
+```{r}
+## VALUE (continuous): checking range, NA, zero values
+dta_t[, .(min = min(x = VALUE, na.rm = TRUE),
+          max = max(x = VALUE, na.rm = TRUE),
+          n_na = sum(is.na(x = VALUE)),
+          n_zero = sum(VALUE == 0, na.rm = TRUE))]
+```
+
+```{r}
+## FLAG values (categorical): count rows by value
+dta_t[, .N, by = FLAG]
+```
+
+```{r}
+## QUALITY values (categorical)
+dta_t[, .N, by = QUALITY]
+```
+
+```{r}
+## X column (categorical)
+dta_t[, .N, by = X]
+```
+
+**Summary of variables:**
+
+- `STATION`: identifier, factor with 431 levels, possibly an ID for the station where the measurement was taken
+- `ELEMENT`: identifier, single-level factor with value `SRA1H`, possibly measurement type
+- `DT`: date/time of measurement
+- `VALUE`: continuous numerical value, measurement of the rainfall. Contains `NA` and zero values. Keep zeroes as they are a valid precipitation measurement but filter out when calculating statistics to avoid artificially dragging down the average
+- `FLAG`: categorical containing either `NA`, no value, or `"Z"` as chr, possibly indicating data collection issues (keep)
+- `QUALITY`: categorical containing one of three numerical values: 0, 3, 4, possibly denoting quality of measurements (keep)
+- `X`: all NAs — assuming this doesn't add to our understanding of the data and can be dropped
+
+**What needs cleaning:**
+
+- `X`: can be dropped
+- `VALUE`: need to handle `NA` values
+- `FLAG`: empty strings and NA potentially both mean "no flag", should address this inconsistency
+- `QUALITY`: codes 3 and 4 indicate lower quality measurements, flag these rows but keep them
+
+
+## Filtering and summaries
+
+```{r}
+## filter out 0 values
+nz <- dta_t[VALUE > 0, .(STATION, DT, VALUE, ELEMENT, FLAG, QUALITY)]
+```
+
+```{r}
+## stat summary by STATION 
+nz[, .(mean = mean(x = VALUE),
+       sd   = sd(x = VALUE),
+       iqr  = IQR(x = VALUE),
+       min  = min(x = VALUE),
+       max  = max(x = VALUE)),
+   by = STATION]
+```
+
+```{r}
+## stat summary by STATION and YEAR
+## year() extracts just year from datetime
+nz[, .(mean = mean(x = VALUE),
+       sd   = sd(x = VALUE),
+       iqr  = IQR(x = VALUE),
+       min  = min(x = VALUE),
+       max  = max(x = VALUE)),
+   by = .(STATION, year(x = DT))]
+```
+
+**Observations:**
+
+- After exploration, it looks like the mean rainfall for each station varies between around 0.5-1.0mm/hr which seems reasonable
+- Coefficient of variation values (sd/mean) are around 2.3-2.9 across the top 10, so there isn't one station that is significantly more erratic
+- When ordered by max, station 0-203-0-10802004001 has an unusually high max of 105.6mm compared to its mean of around 0.79mm, suggesting a possible error (or just a very intense rainfall for that hour), although other stations have maxes up to 89.7 mm, so this isn't a crazy outlier. When broken down by year, this station shows a max of 8.5mm in 2023 jumping to 105.6mm in 2024. Additionally, rainfall was recorded 29.2mm at 9am and 105.6mm at 10am on the same day, which is a big jump, so this could be worth flagging.
+
+
+## Duplicate analysis
+
+```{r}
+## count exact duplicate rows
+sum(duplicated(x = dta_t))
+```
+
+```{r}
+## show examples of exact duplicates
+dta_t[duplicated(x = dta_t)][1:10]
+```
+
+```{r}
+## count logical duplicates using data.table
+## logical duplicate: same station and datetime
+dta_t[, .(n = .N),
+      by = .(STATION, DT)][n > 1, .N]
+
+# examples of logical duplicates
+dta_t[duplicated(x = dta_t, by = c("STATION", "DT"))][1:10]
+
+## check for different value measurements in logical duplicates
+## commented because it takes a long time to run
+## dta_t[, .(n = .N,
+##         n_distinct_values = uniqueN(x = VALUE)),
+##     by = .(STATION, DT)][n_distinct_values > 1]
+```
+
+
+**Observations:**
+
+- A logical duplicate means two rows that are identical in meaning even if they may not be identical in exact values for every column. In this case, if multiple measurements are taken from the same station at the exact same time, this constitutes a logical duplicate.
+- There are 2846 exact duplicates (values in all columns are same) and 2922 logical duplicates (same station and datetime). 
+- When checking specifically for different VALUE measurements from the same station and time, we get 69 results, meaning that the same station recorded different values at the same time, which is a problem, since we don't know which value is correct. These rows can either be flagged or omitted. 
+
+
+## Cleaning
+
+```{r}
+## drop X column, contains only NAs
+dta_t[, X := NULL]
+```
+
+```{r}
+## flag low quality rows, codes 3 and 4 identified in inspection
+dta_t[, low_quality := QUALITY %in% c(3, 4)]
+dta_t[low_quality == TRUE, .N]
+```
+
+```{r}
+## address FLAG inconsistency, empty strings and NA both mean no flag
+## change empty strings to NA
+dta_t[, FLAG := fifelse(test = FLAG == "",
+                        yes = NA_character_,
+                        no = FLAG)]
+
+## convert FLAG to factor 
+dta_t[, FLAG := as.factor(x = FLAG)]
+```
+
+```{r}
+## flag extreme values using IQR method on non-zero values
+q75 <- quantile(x = dta_t$VALUE[dta_t$VALUE > 0],
+                probs = 0.75,
+                na.rm = TRUE)
+
+iqr_val <- IQR(x = dta_t$VALUE[dta_t$VALUE > 0],
+               na.rm = TRUE)
+
+dta_t[, extreme_val := VALUE > q75 + 3 * iqr_val]
+dta_t[extreme_val == TRUE, .N]
+```
+
+```{r}
+## flag duplicate rows - catches both exact and logical duplicates
+## keeps first occurrence, removes subsequent ones
+dta_t[, duplicate := duplicated(x = dta_t,
+                                by = c("STATION", "DT"))]
+
+## flag missing values
+dta_t[, missing_val := is.na(x = VALUE)]
+
+## check counts before cleaning
+dta_t[duplicate == TRUE, .N]
+dta_t[missing_val == TRUE, .N]
+```
+
+```{r}
+## create clean dataset by filtering out flagged rows
+dta_clean <- dta_t[duplicate == FALSE & missing_val == FALSE]
+```
+
+```{r}
+## remove helper columns from cleaned table
+dta_clean[, duplicate := NULL]
+dta_clean[, missing_val := NULL]
+```
+
+**Cleaning decisions:**
+
+- Missing values: decided to completely remove rows with missing values from clean dataset. Kept missing_val column in original dataset to preserve record of where values were missing. 
+- Duplicates: handling both logical and exact duplicates in the same filtering operation, where we keep the first record for each. Preserving record of duplicates in original dataset as well. For the 69 cases with conflicting values this decision is uncertain, but the impact is small given the dataset size.
+- Suspicious `VALUE`s: decided to use the IQR method to identify and flag extreme values, as this is a method commonly used with skewed data like rainfall (adapts the the data's actual distribution rather than taking a fixed proportion). Used non-zero values in the boundary calculation and used 3 * IQR instead of 1.5 to catch just major extremes. 
+- `FLAG`s: interpreted the empty strings and NA values for the `FLAG` column as having the same meaning, so changed all empty strings to `NA` and preserved the other flag `"Z"` value as is. Converted to factor for efficiency.
+- `QUALITY`: assuming higher numbers mean lower quality based on standard meteorological data quality conventions, although this can't be confirmed with the information we have. Flagging instead of removing because the data can still be useful and may be valid. This approach allows user to include or exclude these data points as needed.
+
+
+## Renaming and column work
+
+```{r}
+## rename DT to DATETIME 
+setnames(x = dta_clean,
+         old = c("DT"),
+         new = c("DATETIME"),
+         skip_absent = TRUE)
+```
+
+```{r}
+## add year column
+dta_clean[, yr := year(x = DATETIME)]
+
+## add hour column for time of day analysis
+dta_clean[, hr := hour(x = DATETIME)]
+
+## confirm final column names
+names(x = dta_clean)
+```
+
+**Decisions:**
+
+- Renamed `DT` to `DATETIME` for the sake of clarity, this seemed like the best choice for renaming.
+- Added a column for year and hour to allow for ease of analysis either by year or by time of day.
+- Helper columns created and deleted in above cleaning section.
+
+
+## Station summary
+
+```{r}
+## station summary (stats on nonzero values)
+st_sum <- dta_clean[VALUE > 0, 
+                    .(mean = mean(x = VALUE),
+                      sd = sd(x = VALUE),
+                      min = min(x = VALUE),
+                      max = max(x = VALUE)), 
+                    by = STATION]
+
+## merge in counts from full dataset (incl zeroes)
+st_counts <- dta_clean[, .(n_rows = .N,
+                           n_nonzero = sum(VALUE > 0),
+                           n_flagged = sum(!is.na(x = FLAG)),
+                           n_low_qual = sum(low_quality == TRUE),
+                           n_extreme = sum(extreme_val == TRUE)), 
+                       by = STATION]
+
+st_sum <- merge(x = st_sum,
+                y = st_counts,
+                by = "STATION")
+```
+
+```{r}
+## most problematic stations - flagged
+st_sum[order(-n_flagged)][1:10]
+
+## most problematic stations - low quality
+st_sum[order(-n_low_qual)][1:10]
+
+## most problematic - combined flagged and low quality
+st_sum[, problem_score := n_flagged + n_low_qual]
+st_sum[order(-problem_score)][1:10]
+```
+
+```{r}
+## highest non-zero precipitation
+st_sum[order(-mean)][1:10]
+```
+
+```{r}
+## most records
+st_sum[order(-n_rows)][1:10]
+```
+
+```{r}
+## most suspicious - extreme values
+st_sum[order(-n_extreme)][1:10]
+```
+
+**Notes:**
+
+- Calculated statistics using nonzero values as zeroes represent lack of rainfall and drag down mean and sd. 
+- Calculated counts on full dataset as flags and record counts are still informative for hours without rainfall.
+
+**Questions:**
+
+- Which stations seem most problematic? Stations 0-20000-0-11747 and 0-20000-0-11624 have by far the most combined flags and low quality scores (assuming the flag is an indicator of a problem and high quality values are problematic)
+- Which stations have the highest non-zero precipitation? 0-20000-0-11787, 0-203-0-10801028001, 0-203-0-11749
+- Which stations have the most records? Many stations with 61361 records
+- Which stations have the most suspicious rows? 0-203-0-11640, 0-20000-0-11787, 0-20000-0-11643
+
+
+## Element summary
+
+```{r}
+## element summary
+el_sum <- dta_clean[, .(n_rows = .N,
+                        n_stations = uniqueN(x = STATION),
+                        mean = mean(x = VALUE[VALUE > 0]),
+                        sd = sd(x = VALUE[VALUE > 0]),
+                        missing_prop = mean(x = is.na(x = VALUE)),
+                        n_flagged = sum(!is.na(x = FLAG)),
+                        n_low_qual = sum(low_quality == TRUE),
+                        n_extreme = sum(extreme_val == TRUE)), 
+                    by = ELEMENT]
+
+el_sum
+```
+
+**Summary:**
+
+Since there is only one `ELEMENT` value for all of the data, we cannot compare between different `ELEMENT`s. Proportion of missing values will always be 0 because we removed them earlier during the cleaning step.
+
+
+## Merge task
+
+```{r}
+## nz with cleaned data
+nz <- dta_clean[VALUE > 0]
+```
+
+```{r}
+## helper table: complete hourly sequence with VALUE = 0
+## represents every possible hour in the study period
+dt <- data.table(VALUE = 0,
+                 DATETIME = seq(from = as.POSIXct(x = "2018-01-01 00:00:00"),
+                                to = as.POSIXct(x = "2025-01-01 00:00:00"),
+                                by = "hour"))
+```
+
+```{r}
+## merge hourly sequence with nonzero observations
+hourly_coverage <- merge(x = dt,
+                         y = nz,
+                         by = "DATETIME",
+                         all.x = TRUE)
+
+## renaming VALUE column for clarity
+setnames(x = hourly_coverage,
+         old = c("VALUE.y"),
+         new = c("VALUE"),
+         skip_absent = TRUE)
+
+## removing column of zeroes - not informative
+hourly_coverage[, VALUE.x := NULL]
+
+## checking rows with no rainfall
+hourly_coverage[is.na(x = VALUE)]
+```
+
+**What helper table represents:** creates a full timeseries of every hour during the period of measurement with `VALUE = 0` assigned to every hour as a baseline
+
+**How the merge works:** `nz` only contains hours where rainfall was recorded. Merging `nz` into `dt` creates a row for every hour with nothing recorded and assigns it a VALUE of NA. `all.x = TRUE` makes sure every hour is preserved.
+
+**Why it's useful:** this process gives us a full picture of the hourly recordings, including hours where there was no rain recorded anywhere.
+
+
+## Reshape task
+
+```{r}
+## create hourly means by station
+hr_sum <- dta_clean[VALUE > 0,
+                    .(mean = mean(x = VALUE)),
+                    by = .(STATION, hr)]
+
+## reshape to wide - one row per station, one column per hour
+wide <- dcast(data = hr_sum,
+              formula = STATION ~ hr, # STATION becomes rows, hr become cols
+              value.var = "mean") # fills cells with mean values
+
+wide
+
+## reshape back to long
+long <- melt(data = wide,
+             id.vars = "STATION", # keeps STATION as row identifier
+             variable.name = "hr", # collapse into single column
+             value.name = "mean")
+
+
+## calculate mean across all stations per hour using wide format
+## removing first col STATION then calculate mean of each col
+hour_means <- colMeans(x = wide[, -1, with = FALSE],
+                       na.rm = TRUE)
+
+## convert to data.table for plotting
+hour_dt <- data.table(hr = as.numeric(x = names(x = hour_means)),
+                      mean = hour_means)
+
+## plot
+ggplot(data = hour_dt,
+       aes(x = hr,
+           y = mean)) +
+  geom_line() +
+  scale_x_continuous(breaks = seq(from = 0,
+                                  to = 23,
+                                  by = 1)) +
+  labs(title = "Average rainfall intensity by hour of day across all stations",
+       x = "Hour",
+       y = "Mean rainfall (mm)") 
+
+```
+
+**Summary**: Used `dcast()` to reshape hourly mean rainfall into wide format with one row per station and one column per hour. Using this wide table, used `colMeans()` to calculate the average across all stations for each hour, collapsing 431 stations into a single mean value per hour. Plotting this revealed a clear midday peak around 12:00-13:00.
+
+
+## Final conclusions
+
+**Main data problems:**
+- `X` column contained only `NA` values across all rows and contained no information
+- 2846 exact duplicates and 2922 logical duplicates
+- 69 cases where the same station recorded different values at the same datetime, making it impossible to determine which is correct
+- 37,002 missing `VALUE`s
+- 165,247 rows with `QUALITY` codes 3 or 4, suggesting lower quality measurements
+- `FLAG` column had inconsistent representation of "no flag" using both empty strings and NA
+- Station 0-203-0-10802004001 recorded 105.6mm in a single hour in 2024, 
+compared to a station mean of ~0.79mm and a maximum of 8.5mm in the previous year
+
+**What was cleaned:**
+- `X` column dropped entirely
+- Exact and logical duplicates removed by keeping the first occurrence of each station/datetime combination
+- Rows with missing `VALUE`s removed from `dta_clean`
+- `FLAG` empty strings changed to `NA` and converted to factor
+- `low_quality` and `extreme_val` flags added, rows kept
+
+**Uncertain decisions:**
+- Kept the first occurrence of duplicate rows, although there is no way to know if this was the correct measurement
+- QUALITY codes 3 and 4 were assumed to indicate lower quality but this is not confirmed
+- The 3×IQR method for extreme values is somewhat arbitrary, unsure if this is the best method
+
+**Most suspicious station:**
+- Station 0-203-0-10802004001 was the most suspicious for reasons mentioned above, may be a sensor fault
+
+**Most useful data.table operations:**
+- `:=` for adding and removing columns in place without copying the dataset
+- `by` with `.N` for grouping and duplicates
+- `dcast()` and `melt()` for reshaping
+- `merge()` for creating complete timeseries
+- `fifelse()` for fast conditional column updates
