@@ -1,0 +1,642 @@
+---
+title: "ggplot2 project — precipitation data"
+author: "Eugenia Olari"
+date: "2026-04-06"
+format: html
+---
+
+## Load data
+
+```{r}
+library(data.table)
+library(ggplot2)
+library(scales)
+library(patchwork)
+
+dta <- readRDS(file = "data/prec_data.rds")
+dta_t <- as.data.table(x = dta)
+```
+
+## Basic inspection
+
+```{r}
+class(x = dta)
+class(x = dta_t)
+head(x = dta_t)
+names(x = dta_t)
+dim(x = dta_t)
+```
+
+```{r}
+## time range
+range(dta_t$DT, na.rm = TRUE)
+
+## unique stations and elements
+length(x = unique(x = dta_t$STATION))
+length(x = unique(x = dta_t$ELEMENT))
+unique(x = dta_t$ELEMENT)
+```
+
+```{r}
+## column types
+str(object = dta_t)
+
+## summary of VALUE
+summary(object = dta_t$VALUE)
+
+## QUALITY and FLAG breakdown
+table(dta_t$QUALITY, useNA = "always")
+table(dta_t$FLAG, useNA = "always")
+
+## zero / NA / positive counts
+cat("Zero values:", sum(dta_t$VALUE == 0, na.rm = TRUE), "\n")
+cat("NA values:", sum(is.na(x = dta_t$VALUE)), "\n")
+cat("Positive values:", sum(dta_t$VALUE > 0, na.rm = TRUE), "\n")
+```
+
+### Mapping discussion
+
+The dataset has about 25.7 million rows, 431 stations, and only one element (SRA1H, which is hourly precipitation). The time range goes from 2018-01-01 to 2024-12-31.
+
+DT is the obvious candidate for the x-axis in time series plots. 
+VALUE is the natural y variable since it is the measured precipitation.
+
+STATION could be used for colour or faceting, but with 431 levels it would be completely unreadable as colour — the legend alone would be huge and we could not tell the colours apart. So STATION is better used for faceting after subsetting to a smaller number. 
+
+QUALITY has 3 levels (0, 3, 4) so it works for colour or shape. 
+
+FLAG also has few values and could work for colour.
+
+ELEMENT only has one level so mapping it would not add anything. 
+
+The X column is all NA so it is useless and we probably need to drop it.
+
+One important thing that noticed: about 89% of the values are zero. This means a normal histogram would just show us one huge bar at zero and we would not see anything else. 
+**This is already one place where a default plot would be misleading.**
+
+```{r}
+## drop the useless X column
+dta_t[, X := NULL]
+```
+
+## Data preparation
+
+Creating several helper variables that will be useful for plotting
+
+```{r}
+## year — needed for grouping by year and for faceting by year
+dta_t[, YEAR := year(x = DT)]
+
+## month — for looking at seasonal patterns (like boxplots by month)
+dta_t[, MONTH := month(x = DT)]
+
+## indicator for positive precipitation — since most values are zero,
+## I often need to filter to only the rainy hours, so a logical column
+## makes this easier
+dta_t[, IS_POS := VALUE > 0]
+
+## quality category as a factor with readable labels — QUALITY is
+## numeric (0, 3, 4) and I want more nicer labels in plots
+dta_t[, Q_CAT := factor(
+  x = QUALITY,
+  levels = c(0, 3, 4),
+  labels = c("OK", "suspect", "bad")
+)]
+
+## date column for daily aggregation — hourly data has too many points
+## for most time series plots so I will often aggregate to daily
+dta_t[, DATE := as.Date(x = DT)]
+```
+
+YEAR and MONTH are useful for grouping and faceting to see seasonal and annual patterns. 
+
+IS_POS lets us quickly filter to rainy hours, which needed for almost every distribution plot. 
+
+Q_CAT gives readable labels instead of cryptic numbers. 
+
+DATE allows daily aggregation which makes time series plots manageable.
+
+
+
+## Station selection
+
+With 431 stations I cannot plot all of them at once. So we need to pick 6 stations using a clear rule.
+
+The idea is to pick 3 stations that have the most rainy hours (so they have a lot of actual precipitation data to look at) and 3 stations that have the highest share of quality problems (so I can study data quality issues). 
+
+This way I get a nice way to look between "good active" stations and "problematic" stations.
+
+```{r}
+## compute how many positive (rainy) hours each station has
+dt_act <- dta_t[!is.na(x = VALUE),
+  .(n_pos = sum(VALUE > 0), n_total = .N),
+  by = STATION
+]
+dt_act[, pct_pos := n_pos / n_total]
+
+## top 3 stations by number of rainy hours
+st_top3 <- dt_act[order(-n_pos)][1:3, STATION]
+
+## compute what share of rows have quality issues per station
+dt_qual <- dta_t[,
+  .(n_bad = sum(QUALITY != 0, na.rm = TRUE), n_total = .N),
+  by = STATION
+]
+dt_qual[, pct_bad := n_bad / n_total]
+
+## top 3 by share of quality issues — but only among stations with at
+## least 10000 rows so that tiny stations with a few bad rows do not
+## dominate the ranking
+st_qual3 <- dt_qual[n_total >= 10000][order(-pct_bad)][1:3, STATION]
+
+## combine into st_sel
+st_sel <- c(as.character(x = st_top3), as.character(x = st_qual3))
+
+## check for overlap — if a station is in both groups, pick the next one
+if (length(x = unique(x = st_sel)) < 6) {
+  st_qual_extra <- dt_qual[n_total >= 10000][order(-pct_bad)][
+    !STATION %in% st_top3
+  ][1:3, STATION]
+  st_sel <- c(
+    as.character(x = st_top3),
+    as.character(x = st_qual_extra)
+  )
+}
+st_sel <- unique(x = st_sel)[1:6]
+
+cat("Selected stations:\n")
+print(st_sel)
+```
+
+The selected stations are:
+
+- **Active:** 11640 (21% rainy hours), 10501021001 (20%), 10801005002 (19%)
+- **Quality:** 41003075001 (49% flagged!), 10103042002 (3.8%), 11669 (3.6%)
+
+Station 41003075001 stands out as almost half of its data is flagged which is much more than any other station. Station 11640 ended up being interesting because it is both very active and has some quality issues.
+
+What is lost by this selection: I am ignoring 425 out of 431 stations. Stations with average activity or moderate quality problems are not included. Also stations with very short records were filtered out from the quality ranking, but 6 stations is a manageable number for faceted plots and the contrast between active and problematic stations should make patterns easier to see.
+
+```{r}
+## subset data to selected stations
+dta_sel <- dta_t[STATION %in% st_sel]
+```
+
+## Temporal plots
+
+### Plot A — daily time series (p1)
+
+I cannot plot all hourly data directly because each station has about 61000 rows and it would just be a solid block of messy data, so I aggregate to daily totals first. This reduces each station to about 2500 points which is much more readable.
+
+I use `facet_wrap` to give each station its own panel so the lines do not overlap each other. Keep zeros visible because the dry periods between rain events tell us something about seasonality.
+
+```{r}
+## daily totals for selected stations
+dt_daily <- dta_sel[!is.na(x = VALUE),
+  .(daily_sum = sum(VALUE)),
+  by = .(STATION, DATE)
+]
+
+p1 <- ggplot(data = dt_daily, mapping = aes(x = DATE, y = daily_sum)) +
+  geom_line(linewidth = 0.3, colour = "steelblue", alpha = 0.7) +
+  facet_wrap(~ STATION, ncol = 2, scales = "free_y") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  labs(
+    title = "Daily precipitation totals by station",
+    x = "Date", y = "Daily total (mm)"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(strip.text = element_text(size = 7))
+p1
+```
+
+I used `free_y` scales here because the stations have quite different ranges. When I first tried fixed scales, the stations with lower values were just flat lines and we could not see any pattern. So `free_y` was clearly better even though it makes direct comparison of magnitudes harder.
+
+Station 41003075001 is almost empty after about mid-2021. This is not a bug — most of its data from that period is flagged as QUALITY == 4 (bad) with NA values, so there is very little valid data left to sum. This is already a visible sign of the quality problem before even looking at the quality plots.
+
+
+
+### Plot B — monthly totals (p2)
+
+Monthly aggregation smooths out the daily noise and makes it easier to see seasonal patterns and differences between years. 
+
+One thing to notice again: station 41003075001 has very low or missing bars from about mid-2021 This is because most of its data in that period has QUALITY == 4 (bad) with NA values. So the monthly sums become very small because there is almost no valid data to sum. This confirms the quality problem we found in the station selection step.
+
+- What becomes clearer: the summer peak in precipitation. 
+- What is lost: you cannot see individual storm events anymore, and a month with one huge event looks the same as a month with many small events.
+
+```{r}
+dt_month <- dta_sel[!is.na(x = VALUE),
+  .(month_sum = sum(VALUE)),
+  by = .(STATION, YEAR, MONTH)
+]
+dt_month[, DT_MONTH := as.Date(paste(YEAR, MONTH, "01", sep = "-"))]
+
+p2 <- ggplot(data = dt_month, mapping = aes(x = DT_MONTH, y = month_sum)) +
+  geom_col(fill = "steelblue", width = 25) +
+  facet_wrap(~ STATION, ncol = 2, scales = "free_y") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  labs(
+    title = "Monthly precipitation totals by station",
+    x = "Month", y = "Monthly total (mm)"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(strip.text = element_text(size = 7))
+p2
+```
+
+### Plot C — extreme events (p3)
+
+This plot highlights the biggest daily precipitation events. I rank all days within each station and mark the top 5. The background is a grey time series and the extreme events are shown as red points with labels. This way your eye is drawn to the red points immediately and you can see when and how big the extreme events were.
+
+```{r}
+dt_daily[, rnk := frank(x = -daily_sum, ties.method = "first"), by = STATION]
+dt_extreme <- dt_daily[rnk <= 5]
+
+p3 <- ggplot(data = dt_daily, mapping = aes(x = DATE, y = daily_sum)) +
+  geom_line(linewidth = 0.2, colour = "grey70") +
+  geom_point(
+    data = dt_extreme,
+    mapping = aes(x = DATE, y = daily_sum),
+    colour = "red", size = 1.5
+  ) +
+  geom_text(
+    data = dt_extreme,
+    mapping = aes(x = DATE, y = daily_sum, label = round(x = daily_sum, digits = 0)),
+    colour = "red", size = 2.2, vjust = -0.8
+  ) +
+  facet_wrap(~ STATION, ncol = 2, scales = "free_y") +
+  labs(
+    title = "Top 5 daily precipitation events per station",
+    subtitle = "Red points = extreme events with daily total in mm",
+    x = "Date", y = "Daily total (mm)"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(strip.text = element_text(size = 7))
+p3
+```
+
+## Distribution plots
+
+### Plot D — ECDF of positive precipitation by station (p4)
+
+* ECDF - Empirical Cumulative Distribution Function, provides a non-parametric way to display the distribution of data points, allowing for easy interpretation of cumulative probabilities.
+
+I decided to use ECDF because it handles skewed data well, like we dont have to choose bin widths like with a histogram.
+
+I filter out zeros because including them would be misleading. With 89% zeros, a histogram would just show one giant bar at zero and nothing else. Even a boxplot would have the median at zero for every station. So filtering to positive values is necessary to see any useful structure. **This is the second place where a default plot would be misleading.**
+
+I also use a log10 x-axis. Without it almost all the data would be crammed into the left edge of the plot because the distribution is extremely skewed (most values are below 1 mm but the max is over 100 mm). The log scale spreads things out so you can actually see differences between stations across the full range.
+
+```{r}
+p4 <- ggplot(
+  data = dta_sel[IS_POS == TRUE],
+  mapping = aes(x = VALUE, colour = STATION)
+) +
+  stat_ecdf(linewidth = 0.6) +
+  scale_x_continuous(trans = "log10", labels = label_number()) +
+  annotation_logticks(sides = "b") +
+  labs(
+    title = "ECDF of positive hourly precipitation by station",
+    subtitle = "Log10 x-axis; zeros excluded to avoid misleading mass at origin",
+    x = "Hourly precipitation (mm, log scale)", y = "Cumulative proportion"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(legend.position = "bottom", legend.text = element_text(size = 6))
+p4
+```
+
+### Plot E — boxplot by month and station (p5)
+
+This shows how the distribution of rain intensity changes across months and differs between stations. Again I filter to positive values and use a log y-axis, otherwise all the boxes would just sit at zero and look identical.
+
+```{r}
+p5 <- ggplot(
+  data = dta_sel[IS_POS == TRUE],
+  mapping = aes(x = factor(x = MONTH), y = VALUE, fill = STATION)
+) +
+  geom_boxplot(outlier.size = 0.3, alpha = 0.6) +
+  scale_y_continuous(trans = "log10", labels = label_number()) +
+  labs(
+    title = "Distribution of positive precipitation by month and station",
+    subtitle = "Log10 y-axis; zeros excluded",
+    x = "Month", y = "Hourly precipitation (mm, log scale)"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(legend.position = "bottom", legend.text = element_text(size = 6))
+p5
+```
+
+## Quality and suspicious-data plots
+
+I define "suspicious" data as:
+
+1. QUALITY == 3 (marked as suspect by the data provider)
+2. FLAG == "Z" (present in about 56k rows, unclear what it means)
+3. Large jumps: when VALUE changes by more than 20 mm from one hour to the next within the same station. A jump that big in one hour seems unlikely for real precipitation and could be a sensor problem.
+
+```{r}
+## compute hourly jumps
+setorder(x = dta_sel, STATION, DT)
+dta_sel[, VALUE_DIFF := abs(x = VALUE - shift(x = VALUE, n = 1L, type = "lag")),
+  by = STATION
+]
+dta_sel[, IS_JUMP := VALUE_DIFF > 20]
+```
+
+### Plot F — quality flags over time (p6)
+
+This plot shows when quality issues happen over time for each station. It combines a temporal aspect (date on x), a quality indicator (colour for suspect vs bad), and station comparison (facets). I wanted to see whether quality problems are spread randomly or clustered in certain time periods.
+
+```{r}
+dt_qtime <- dta_sel[Q_CAT != "OK",
+  .(n_issues = .N),
+  by = .(STATION, DATE, Q_CAT)
+]
+
+p6 <- ggplot(
+  data = dt_qtime,
+  mapping = aes(x = DATE, y = n_issues, colour = Q_CAT)
+) +
+  geom_point(size = 0.5, alpha = 0.5) +
+  facet_wrap(~ STATION, ncol = 2, scales = "free_y") +
+  scale_colour_manual(values = c("suspect" = "orange", "bad" = "red")) +
+  labs(
+    title = "Data quality issues over time by station",
+    subtitle = "Each point = count of flagged hours on that day",
+    x = "Date", y = "Flagged hours per day", colour = "Quality"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(
+    strip.text = element_text(size = 7),
+    legend.position = "bottom"
+  )
+p6
+```
+
+Looking at the plot, station 41003075001 clearly has quality issues concentrated in a specific time block (looks like 2022 onwards) rather than being spread randomly. The other stations have more scattered suspect values. This would not be visible from just looking at counts in a table.
+
+
+### Plot G — large hourly jumps (p7)
+
+This shows points where the hour-to-hour change was bigger than 20 mm
+
+```{r}
+dt_jumps <- dta_sel[IS_JUMP == TRUE & !is.na(x = IS_JUMP)]
+
+p7 <- ggplot(
+  data = dt_jumps,
+  mapping = aes(x = DT, y = VALUE_DIFF)
+) +
+  geom_point(size = 0.6, alpha = 0.5, colour = "red3") +
+  facet_wrap(~ STATION, ncol = 2, scales = "free") +
+  labs(
+    title = "Suspicious hourly jumps (> 20 mm change in one hour)",
+    subtitle = "Each point = one hour where precipitation changed by more than 20 mm",
+    x = "Time", y = "Absolute hourly change (mm)"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(strip.text = element_text(size = 7))
+p7
+```
+
+## Element comparison plots
+
+The dataset only contains one element (SRA1H = hourly precipitation sum). I was expecting multiple elements but after checking with `unique(dta_t$ELEMENT)` there is really just one. So I cannot compare different measurement types directly.
+
+Instead, it probbaly would be better to compare the data by quality categories within the same element. 
+
+```{r}
+el_sel <- "SRA1H"
+```
+
+### Plot H — ECDF comparing OK vs suspect quality (p8)
+
+If suspect data has a different distribution than OK data, that would mean the quality flags are actually catching something real, not just random tagging.
+
+```{r}
+p8 <- ggplot(
+  data = dta_sel[IS_POS == TRUE & Q_CAT != "bad"],
+  mapping = aes(x = VALUE, colour = Q_CAT)
+) +
+  stat_ecdf(linewidth = 0.6) +
+  scale_x_continuous(trans = "log10", labels = label_number()) +
+  annotation_logticks(sides = "b") +
+  labs(
+    title = "ECDF of positive precipitation: OK vs. suspect quality",
+    subtitle = "Does suspect-flagged data follow a different distribution?",
+    x = "Hourly precipitation (mm, log scale)", y = "Cumulative proportion"
+  ) +
+  scale_colour_manual(values = c("OK" = "steelblue", "suspect" = "orange")) +
+  theme_minimal(base_size = 10) +
+  theme(legend.position = "bottom")
+p8
+```
+
+I used the log scale again here for the same reason — without it everything would be squished to the left. The two curves seem to differ a bit which suggests the suspect flag is not random.
+
+### Plot I — boxplot by FLAG value, faceted by station (p9)
+
+Here I compare precipitation distributions for different FLAG values across stations. This uses faceting by station.
+
+```{r}
+dta_sel[, FLAG_CAT := fifelse(
+  test = is.na(x = FLAG), yes = "no flag",
+  no = fifelse(test = FLAG == "", yes = "empty", no = FLAG)
+)]
+
+p9 <- ggplot(
+  data = dta_sel[IS_POS == TRUE],
+  mapping = aes(x = FLAG_CAT, y = VALUE, fill = FLAG_CAT)
+) +
+  geom_boxplot(outlier.size = 0.3) +
+  scale_y_continuous(trans = "log10", labels = label_number()) +
+  facet_wrap(~ STATION, ncol = 3, scales = "free_y") +
+  labs(
+    title = "Precipitation by FLAG value and station",
+    subtitle = "Does FLAG status relate to different precipitation patterns?",
+    x = "FLAG", y = "Hourly precipitation (mm, log scale)"
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal(base_size = 10) +
+  theme(
+    strip.text = element_text(size = 7),
+    legend.position = "bottom"
+  )
+p9
+```
+
+## Grammar of Graphics explanation
+
+I explain four of my plots in terms of the Grammar of Graphics components.
+
+**p1 (daily time series)**
+
+- **data:** `dt_daily` — daily aggregated precipitation for 6 stations
+- **mapping:** x = DATE, y = daily_sum
+- **geom:** `geom_line` — connects days to show the time development
+- **stat:** identity — I already computed the daily sums before plotting
+- **facet:** `facet_wrap` by STATION with 2 columns — each station gets its own panel so lines do not overlap
+- **scale:** free_y so that stations with lower values are still readable, date axis with yearly labels
+- **theme:** `theme_minimal` for a clean look, small strip text so the long station names fit
+
+**p3 (extreme events)**
+
+- **data:** `dt_daily` for the background + `dt_extreme` for the highlights
+- **mapping:** x = DATE, y = daily_sum, and label = rounded value for the extreme points
+- **geom:** `geom_line` for context, `geom_point` + `geom_text` for annotation
+- **stat:** identity for all layers
+- **facet:** `facet_wrap` by STATION with free_y
+- **scale:** free_y to fit different station ranges
+- **theme:** `theme_minimal` - red colour for the annotation layer to make extremes stand out against the grey background
+
+**p4 (ECDF)**
+
+- **data:** `dta_sel` filtered to positive values only
+- **mapping:** x = VALUE, colour = STATION
+- **geom:** `stat_ecdf` — draws the empirical cumulative distribution
+- **stat:** ecdf — this is not the default identity stat, the ECDF is computed by ggplot
+- **facet:** none — with 6 stations the overlaid coloured lines are still readable
+- **scale:** log10 on x because the data is extremely skewed
+- **theme:** `theme_minimal`, legend moved to the bottom to save space
+
+**p6 (quality flags over time)**
+
+- **data:** `dt_qtime` — daily counts of quality issues
+- **mapping:** x = DATE, y = n_issues, colour = Q_CAT
+- **geom:** `geom_point` — each point is one day with quality issues
+- **stat:** identity
+- **facet:** `facet_wrap` by STATION with free_y because station 41003075001 has way more issues than the others
+- **scale:** manual colour scale (orange = suspect, red = bad)
+- **theme:** `theme_minimal`, small strip text, legend at bottom
+
+## Faceting and scale decisions
+
+**Decision 1: free_y vs fixed scales in facet_wrap** (used in p1, p2, p3)
+
+I chose `free_y` because the stations have very different value ranges. I first tried fixed scales and the result was bad — the stations with lower precipitation were just flat lines at the bottom of the panel and we could not see any pattern, so `free_y` fixes this. The downside is that we cannot directly compare magnitudes across panels, but I think being able to see the pattern in each station is more important here (?).
+
+**Decision 2: log10 transform on x-axis** (used in p4, p8)
+
+Precipitation is very right-skewed. Without a log scale, about 95% of the data points would be in a tiny area on the left side of the plot. The log scale spreads things out so we can see the full distribution. I tried a linear scale first and it was basically useless — everything was near zero.
+
+**Decision 3: alpha transparency** (used in p1, p5, p6)
+
+I use alpha to reduce overplotting. In the daily time series plot for example, there are about 2500 points per panel and many of them overlap near zero. Making lines semi-transparent helps us see where many values overlap versus where there are isolated peaks.
+
+## Reshape step
+
+I compute four summary statistics per station and then reshape them from wide to long format using `melt()`. The reason is that I want to show all four metrics in one faceted plot, and for that I need a single "metric" column and a single "value" column. Without reshaping, I would need to make four separate bar charts, which would be more code and harder to compare.
+
+```{r}
+## station-level summaries
+dt_summary <- dta_sel[!is.na(x = VALUE),
+  .(
+    total_mm = sum(VALUE),
+    pct_positive = 100 * mean(VALUE > 0),
+    pct_quality_issues = 100 * mean(QUALITY != 0),
+    max_daily = max(VALUE)
+  ),
+  by = STATION
+]
+
+## reshape to long
+dta_m <- melt(
+  data = dt_summary,
+  id.vars = "STATION",
+  variable.name = "metric",
+  value.name = "value"
+)
+```
+
+Now I can plot all four metrics with one ggplot call and `facet_wrap`. Without the reshape I would have had to copy-paste the same plot code four times or combine four separate plots manually.
+
+```{r}
+p10 <- ggplot(
+  data = dta_m,
+  mapping = aes(x = STATION, y = value, fill = STATION)
+) +
+  geom_col() +
+  facet_wrap(~ metric, ncol = 2, scales = "free_y") +
+  labs(
+    title = "Station comparison across multiple metrics",
+    subtitle = "Reshaped data allows a single faceted plot for 4 metrics",
+    x = NULL, y = "Value"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 5),
+    legend.position = "none",
+    strip.text = element_text(size = 8)
+  )
+p10
+```
+
+## Final combined figure
+
+I combine four plots into one figure using patchwork:
+
+- top-left: p1 — daily time series (temporal)
+- top-right: p4 — ECDF of positive values (distribution)
+- bottom-left: p6 — quality flags over time (quality/anomaly)
+- bottom-right: p10 — station metric comparison (comparative)
+
+What the figure shows: precipitation has a seasonal pattern with summer peaks, the distribution is very skewed with most hours dry, and station 41003075001 has a big quality problem with about half its data flagged. The ECDF shows that most stations have similar rain distributions but 41003075001 is shifted.
+
+What to notice first: the quality flag panel (bottom-left) where station 41003075001 has a solid red block, and the seasonal pattern in the time series (top-left).
+
+What remains uncertain: I do not know why station 41003075001 has so many flags or whether those values should be removed or corrected...
+
+```{r}
+#| fig-width: 16
+#| fig-height: 12
+
+p_final <- (p1 + p4) / (p6 + p10) +
+  plot_annotation(
+    title = "Precipitation data visual report — 6 selected stations",
+    subtitle = "Temporal, distributional, quality, and comparative views",
+    theme = theme(
+      plot.title = element_text(size = 14, face = "bold"),
+      plot.subtitle = element_text(size = 10)
+    )
+  )
+p_final
+```
+
+## Saving output
+
+```{r}
+ggsave(
+  filename = "fig_station_timeseries.png",
+  plot = p1,
+  width = 12, height = 8, dpi = 200
+)
+
+ggsave(
+  filename = "fig_quality_flags.png",
+  plot = p6,
+  width = 12, height = 8, dpi = 200
+)
+
+ggsave(
+  filename = "fig_final_report.png",
+  plot = p_final,
+  width = 16, height = 12, dpi = 200
+)
+```
+
+## Final conclusions
+
+1. **Most informative visualisation:** The ECDF plot (p4) was probably the most informative because it shows the full distribution shape for each station in one plot. We can immediately see that most rain events are very light (under 1 mm/h) and that station 41003075001 behaves differently. We could not see this from a table of summary statistics.
+
+2. **Hardest to design well:** The quality flags over time plot (p6) was the hardest. The problem was that station 41003075001 has so many more issues than the others that it dominates any plot. I had to use free scales to make the other panels readable at all.
+
+3. **Most important plotting choices for readability:** Filtering out zeros before distribution plots, using log scales for precipitation values, and using free scales in facets. Without these three choices, most plots would have been unreadable.
+
+4. **Suspicious problems visible only after plotting:** The quality flags in station 41003075001 are not spread randomly — they are concentrated in a specific time period - around 2022 onwards, which we can only see in the temporal quality plot (p6). Also the large hourly jumps (p7) show isolated spikes that would not be that obvious from aggregated statistics.
+
+5. **Most unusual station:** Station 41003075001 is clearly the most unusual. About 49% of its data has quality flags, which is far more than any other station.
+
+6. **Element trustworthiness:** There is only one element (SRA1H) so I cannot compare across elements. Within SRA1H, data with QUALITY == 0 seems most trustworthy. The suspect data (QUALITY == 3) has a slightly different distribution (visible in p8), which suggests those flags are actually catching real issues.
+
+7. **Default ggplot2 choices that would have been misleading:** I think a default histogram of all VALUE including zeros would just be one giant bar at zero and nothing else. Plotting all 431 stations with colour would produce an unreadable legend. Using fixed y-scales in facets would make low-activity stations into invisible flat lines.
