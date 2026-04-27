@@ -107,7 +107,7 @@ View(top5_data)
 
 
 # Geom_line is definitely better for the plot, faster and it's easier to read
-# compare to other plots 
+# compared to other plots 
 
 ##### PLOT A
 
@@ -163,9 +163,9 @@ ggplot(day_agg,
 
 
 ## once the data is aggregated by day it shows 2 things
-# the first: does show the overall impact of the precipitation
-# the second is, we loose data of the extreme cases per hour
-# as they are mitigated by the hours where there is lower or no precipitation,
+# the first: it does show the general scale of the precipitation
+# the second is, the extreme cases per hour are combined and
+# they are mitigated by the hours where there is lower or no precipitation,
 # therefore losing the ability to tell whether there was a risk of flooding
 # or a storm.
 
@@ -187,7 +187,7 @@ ggplot(year_agg,
   labs(title = "Precipitation aggregated by year",
        y = "Precipitation in mm")
 
-## The aggregation by year helps to see there is a trend to precipitation increases
+## The aggregation by year helps to see a trend to increased precipitation
 ## We lost the individual observations but we can see a wider perspective
 
 ########## PLOT C EXTREME EVENT VIEW ######
@@ -311,7 +311,7 @@ prec_histogram <- plotzero + plotrain +
 prec_histogram
 
 
-## Too many zeroes in the data makes it impossible to make the plot readable
+## Too many zeros in the data makes it impossible to make the plot readable
 ## from the 5 stations selected only about 20% of the observations were positive
 ## numbers, for the distribution plot it is a must to remove all zeros from 
 ## the data, as the data will treat the events as "even" through the whole 
