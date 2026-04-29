@@ -1,0 +1,229 @@
+## ggplot2 assignment
+## martyna sierpniowska bartelik
+## xsiem003
+
+## packages
+install.packages("data.table")
+install.packages("ggplot2")
+
+library(data.table)
+library(ggplot2)
+
+## loading data
+dta <- readRDS("prec_data.rds")
+
+dta_t <- as.data.table(x = dta)
+
+## inspecting things
+class(x = dta)                                                                  ## data.frame
+class(x = dta_t)                                                                ## data.table, data.frame
+
+names(x = dta_t)                                                                ## STATION ELEMENT DT VALUE FLAG QUALITY X
+dim(x = dta_t)                                                                  ## dimensions of the dataset
+                                                                                ## a TON of rows with only 7 columns
+                                                                                ## could be hard to plot
+
+object.size(x = dta)                                                            ## 1132077608 bytes
+object.size(x = dta_t)                                                          ## 1132078424 bytes
+
+range(dta_t$DT)                                                                 ## earliest date vs most recent
+uniqueN(dta_t$STATION)                                                          ## number of different stations
+uniqueN(dta_t$ELEMENT)                                                          ## number of different elements? im not sure what an "element" is
+
+## preparing everything
+
+## extracting time components
+dta_t[, year := as.integer(format(DT, "%Y"))]                                   ## year
+dta_t[, month := as.integer(format(DT, "%m"))]                                  ## month
+dta_t[, day := as.integer(format(DT, "%d"))]                                    ## day
+
+## indicators :3
+dta_t[, rain_day := VALUE > 0]                                                  ## rainy day for where value is positive
+dta_t[, no_q := is.na(QUALITY)]                                                 ## missing quality
+
+thr <- quantile(dta_t$VALUE, 0.999, na.rm = TRUE)                               ## 99 percentile, i think it's a pretty cool thing to show, 
+                                                                                ## like top 10 most extreme rain ever
+                                                                                ## thr is for threshhold
+
+dta_t[, extreme := VALUE > thr]        
+
+## deleting X
+dta_t[, X := NULL]
+
+## choosing stations
+
+## so basically there's a thing called variance that familiar with and it makes things interesting
+## so high variance means theres a lot of different things happening (interesting results)
+## and low variance means a thing is stable, no ups/downs or limited amount of such (boring results, boooooo)
+## so anyway i'll be choosing high variance stations :3
+
+dt_stat <- dta_t[, .(
+  var_prec = var(VALUE, na.rm = TRUE)),
+  by = STATION]
+
+st_sel <- dt_stat[order(-var_prec)][1:6, STATION]
+
+## choosing elements
+el_sel <- unique(dta_t$ELEMENT)[1:3]
+
+## plots
+
+## plot A - daily time series
+p1 <- ggplot(data = dta_t[STATION %in% st_sel],
+             mapping = aes(x = DT, y = VALUE)) +
+  geom_line(alpha = 0.6) +
+  facet_wrap(~ STATION, ncol = 2) +
+  theme_minimal()
+  
+p1
+
+## i noticed that 2 stations lack data prior to 2020 and one prior to 2022 even
+
+## plot B - monthly aggregation
+dt_month <- dta_t[
+  STATION %in% st_sel,
+  .(prec_month = sum(VALUE, na.rm = TRUE)),
+  by = .(STATION, year, month)
+]
+
+p2 <- ggplot(data = dt_month,
+             mapping = aes(x = factor(month), y = prec_month, group = year)) +
+  geom_line(alpha = 0.6) +
+  facet_wrap(~ STATION) +
+  theme_minimal()
+
+p2
+
+## weird that the month axis has floating point numbers but i dont understand why and im on a time crunch because
+## i forgot this existed and i dont want to be publicly executed for a missing assignment honestly
+## better to have at least something than nothing at all in my opinion 
+## if i can redo it then i would but don't know how this works here
+
+## nevermind i googled it and it was because month is numeric (inm on my second energy drink i apologize for bad writing)
+## fixed by factor(month)
+
+## plot c - extremes
+p3 <- ggplot(data = dta_t[STATION %in% st_sel],
+             mapping = aes(x = DT, y = VALUE)) +
+  geom_line(alpha = 0.6) +
+  geom_point(data = dta_t[STATION %in% st_sel & extreme == TRUE],
+             colour = "red",
+             size = 1.5) +
+  facet_wrap(~ STATION, scales = "free_y") +
+  theme_minimal()
+
+p3
+
+## im crying
+## free y kinda stretched it out a bit so i can see it better 
+## points are on the tallest lines so i guess it did its job
+## i really need to learn time management or else im going to not survive
+
+## plot d - boxplot
+p4 <- ggplot(data = dta_t[STATION %in% st_sel],
+             mapping = aes(x = STATION, y = VALUE)) +
+  geom_boxplot() +
+  scale_y_log10() +                                                             ## log scale bc of the skew i saw previously
+  theme_minimal()                                                               ## therefore no 0s
+
+p4
+
+## plot e - ecdf
+## i don't know what ecdf does but my pal google tells me
+## that its an empirical cumulative distribution function
+## and the google pictures look like every stat graph ive ever seen as a child
+## "It shows the fraction of observations falling below any given value, 
+## providing a direct, non-parametric visualization of data without binning or smoothing." 
+## from my google search
+p5 <- ggplot(data = dta_t[STATION %in% st_sel],
+             mapping = aes(x = VALUE, colour = STATION)
+) +
+  stat_ecdf() +
+  facet_wrap(~ STATION) +
+  theme_minimal()
+
+p5
+
+## it looks UUUGGGLYYYY ohmy god
+## facet_wrap is truly a lifesaver
+
+## quality and suspicious stuff
+
+dta_t[, suspicious := extreme | no_q]                                           ## anything above the threshhold from before
+                                                                                ## also anything with no quality listed
+                                                                                ## will be considered suspicious
+p6 <- ggplot(data = dta_t[STATION %in% st_sel],
+             mapping = aes(x = DT, y = VALUE, colour = suspicious)) +
+  geom_point(alpha = 0.6) +
+  facet_wrap(~ STATION) +
+  theme_minimal()
+
+p6                                                                              ## my pc is struggling
+                                                                                ## why is it blank
+                                                                                ## oh my god
+
+## element comparison
+p7 <- ggplot(data = dta_t[STATION %in% st_sel & ELEMENT %in% el_sel],
+             mapping = aes(x = DT, y = VALUE)) +
+  geom_line() +
+  facet_wrap(ELEMENT ~ STATION) +
+  theme_minimal()
+
+p7
+
+p8 <- ggplot(data = dta_t[STATION %in% st_sel & ELEMENT %in% el_sel],
+             mapping = aes(x = ELEMENT, y = VALUE)) +
+  geom_boxplot() +
+  scale_y_log10() +                                                             
+  theme_minimal() 
+
+p8
+
+## im never doing assignments this way ever this is very bad practice
+## reshape
+
+dta_m <- melt(
+  dt_month,
+  id.vars = c("STATION", "month"),
+  measure.vars = "prec_month"
+)
+
+## reshaping makes working with ggplot to make cool ggplots easier
+## wide becomes long
+
+## final
+p_final <- ggplot(data = dta_t[STATION %in% st_sel],
+                  mapping = aes(x = DT, y = VALUE)) +
+  geom_line() +
+  facet_wrap(~ STATION ~ .) +
+  theme_minimal() 
+
+p_final
+
+## grid version (I didnt like using grid)
+p_finalGrid <- ggplot(data = dta_t[STATION %in% st_sel],
+                  mapping = aes(x = DT, y = VALUE)) +
+  geom_line() +
+  facet_grid(~ STATION ~ .) +
+  theme_minimal() 
+
+p_finalGrid
+
+## saving
+ggsave("fig_timeseries.png", plot = p1, width = 10, height = 6)
+ggsave("fig_quality.png", plot = p6, width = 10, height = 6)
+
+
+## final thoughts
+## i am very tired and glad it's over
+## I love facet_wrap
+## log scale was cool (first time use)
+## admittedly maybe i didnt do enough clean up and thats why r was so slow with me
+## but then i believe data should be in pristine condition
+## its easier on the people working with it and easier on the reader
+## low variance could have been included also because it could show the difference between both types 
+## but my decision has been made
+## would likely yield way less interesting results
+## i think I already said that though
+## I dont feel fully confident in my code also but it got the job done (i hope)
+## also first time using ecdf
