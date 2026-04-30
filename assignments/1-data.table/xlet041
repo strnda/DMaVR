@@ -1,0 +1,175 @@
+## load data
+pth <- "C:/Users/Admin/Desktop/THAO TÚNG DỮ LIỆU R"
+fls <- list.files(path = pth,
+                  recursive = TRUE,
+                  pattern = ".csv",
+                  full.names = TRUE)
+fls[1]
+dta <- read.table(file = fls[1], 
+                  header = TRUE, 
+                  sep = ",")
+## load package
+install.packages("data.table")
+library(data.table)
+
+
+## convert to data.table
+dta_t <- as.data.table(x = dta)
+
+
+
+## basic inspection
+#class
+class(x= dta)
+class(x = dta_t)
+#head
+head(dta_t)
+#size
+object.size(dta_t)
+#collunm name
+colnames(dta_t)
+#number of rows
+nrow(dta_t)
+#number of collunm
+ncol(dta_t)
+#identifier ( DT ?)
+#catagorial ( FLAG?)
+#variable that may need cleaning ( FLAG, X )
+summary(dta_t)
+
+## filter VALUE > 0
+## summary by station
+## summary by station and year
+nz <- dta_t[VALUE > 0,
+            .(mean = mean(x = VALUE),
+              sd = sd(x = VALUE),
+              iqr = IQR(x = VALUE),
+              min = min(x = VALUE),
+              max = max(x = VALUE)),
+            by = .(STATION, year(x = DT))]
+nz
+# Number of exact duplicate rows
+num_exact_duplicates <- sum(duplicated(dta_t))
+num_exact_duplicates
+
+# Show a few examples of exact duplicates
+dta_t[duplicated(dta_t) | duplicated(dta_t, fromLast = TRUE)][1:5]
+#logical dupes These are rows that represent the same “real-world observation” but are not exactly identical.some columns may differ (like VALUE slightly varies, or a metadata flag differs), but they refer to the same station, element, and date.
+logical_cols <- c("STATION", "DT", "VALUE")  # columns defining a logical duplicate
+# Add a column counting duplicates within each group
+dta_t[, dup_count := .N, by = logical_cols]
+
+# Count rows that are logical duplicates
+num_logical_duplicates <- nrow(dta_t[dup_count > 1])
+num_logical_duplicates
+
+# Show a few examples
+dta_t[dup_count > 1][1:5]
+
+#we should not remove logical duplicate
+## cleaning using :=
+# For VALUE, replace NA with 0 (bias) (or could use median (less bias))
+dta_t[is.na(VALUE), VALUE := 0]
+
+# For FLAG and QUALITY, replace NA with "UNKNOWN"
+dta_t[is.na(FLAG), FLAG := "UNKNOWN"]
+dta_t[is.na(QUALITY), QUALITY := "UNKNOWN"]
+
+# Remove exact duplicates
+dta_t <- unique(dta_t)
+
+# For example, negative values or extreme outliers ( create new collumn)
+dta_t[, suspicious := VALUE < 0 | VALUE > 10000]  # mark suspicious values
+
+# Could set extreme VALUEs to NA or 0
+#dta_t[suspicious == TRUE, VALUE := NA]
+
+# FLAG column is empty in this dataset 
+
+# QUALITY is all 0 → not informative
+
+# Remove helper column 'suspicious'
+#dta_t[, suspicious := NULL]
+
+# Optional: create a row id
+dta_t[, row_id := 1:.N]
+
+## rename columns
+setnames(x = dta_t,
+         old = c("FLAG"),
+         new = c("STATUS"),
+         skip_absent = TRUE)
+#new collumn( have 1 up there in part 5 )
+
+dta_t[, station_row_id := 1:.N, by = STATION]
+
+## station summary
+
+
+# Create station-level summary
+st_sum <- dta_t[, .(
+  n_rows = .N,                           # total number of rows
+  mean_value = mean(VALUE, na.rm = TRUE),
+  sd_value = sd(VALUE, na.rm = TRUE),
+  min_value = min(VALUE, na.rm = TRUE),
+  max_value = max(VALUE, na.rm = TRUE),
+  n_nonzero = sum(VALUE != 0, na.rm = TRUE),   # number of rows with VALUE > 0
+  n_suspicious = sum(suspicious, na.rm = TRUE) # number of suspicious rows
+), by = STATION]
+
+# sap xep order by STATION
+st_sum <- st_sum[order(STATION)]
+
+# Inspect
+head(st_sum)
+## element summary
+# Create element-level summary
+el_sum <- dta_t[, .(
+  n_rows = .N,                          # number of rows per ELEMENT
+  n_stations = uniqueN(STATION),        # number of stations reporting this ELEMENT
+  mean_value = mean(VALUE, na.rm = TRUE),
+  sd_value = sd(VALUE, na.rm = TRUE),
+  prop_missing = sum(is.na(VALUE)) / .N, # proportion of missing VALUEs
+  n_flagged = sum(FALSE),               # FLAG is empty → 0
+  n_questionable = sum(suspicious, na.rm = TRUE) # number of suspicious VALUEs
+), by = ELEMENT]
+
+# Optional: order by ELEMENT
+el_sum <- el_sum[order(ELEMENT)]
+
+# Inspect
+head(el_sum)
+## merge task
+# Ensure DT is datetime
+dta_t[, DT := as.POSIXct(DT)]
+
+# Create non-zero hourly data
+nz_hourly <- dta_t[VALUE > 0, .(DT, VALUE)]
+
+# Helper table
+dt <- data.table(
+  DT = seq(from = as.POSIXct("2018-01-01 00:00:00"),
+           to   = as.POSIXct("2026-01-01 00:00:00"),
+           by   = "hour"),
+  VALUE = 0
+)
+
+# Merge
+merged <- merge(dt, nz_hourly, by = "DT", all.x = TRUE)
+
+## reshape task
+
+#reshape station data into wide format
+wide_dt <- dcast(
+  dta_t,
+  DT ~ STATION,
+  value.var = "VALUE"
+)
+
+head(wide_dt)
+
+## final conclusions
+#maindata problem is some suspicious data and duplicated rows? I suggest to clean suspicious data and I clear the duplicated rows
+#the decision to remove suspicious data because ( I mean its suspicious doesnt mean its not data)
+#idk what look most suspicious
+#summary is quite easy so it is the most succesful?
