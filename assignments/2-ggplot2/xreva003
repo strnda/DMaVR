@@ -1,0 +1,244 @@
+dta <- readRDS("prec_data.rds")
+
+library(data.table)
+library(ggplot2)
+
+dta_t <- as.data.table(x = dta)
+
+##classes
+class(dta)
+class(dta_t)
+
+head(dta_t)
+# I can see that we have columns for: station, element, date, value, flag, quality, and x.
+
+# for me to get general information about data set, best function is summary
+summary(dta_t)
+#I can see that value has very high ammount of NA's
+
+unique(dta_t$STATION)
+#There are 431 stations
+unique(dta_t$ELEMENT)
+
+library(lubridate)
+
+dta_t[, DT := as.POSIXct(DT)]
+dta_t[, year  := year(DT)]
+dta_t[, month := month(DT)]
+dta_t[, day   := day(DT)]
+
+#I'll remove na's from value, and impossible values
+dta_cl <- dta_t
+dta_cl <- dta_cl[!is.na(VALUE)]
+dta_cl[, pos_value := VALUE > 0]
+dta_cl[, qual_missing := is.na(QUALITY)]
+dta_cl[, sus := VALUE < 0 | VALUE > 200]
+
+unique(dta_cl$pos_value)
+unique(dta_cl$qual_missing)
+unique(dta_cl$sus)
+
+#station selection:
+# I went with the rule: stations with the largest number of non-zero values
+# Because, it seems the easiest and I know for sure how to do it
+# stations with highest value has the most rainfall but doesn't include stations with
+# low precipitation.
+# stations with highest precipitation show more patterns which is very nice for plotting
+
+st_rank <- dta_t[, .(n_nonzero = sum(VALUE > 0, na.rm = TRUE)), by = STATION]
+st_sel <- st_rank[order(-n_nonzero)][1:6, STATION]
+
+#let's check data out
+summary(dta_t[STATION %in% st_sel])
+# max is 47 and mean is ~0.15 which means we still have lot's of low and zero numbers
+
+# -------------- PLOTS ------------   ^_^
+
+#---------   Plot A   ----------
+
+p1 <- ggplot(dta_t[STATION %in% st_sel],aes(DT, VALUE)) +
+  geom_line()+
+  facet_wrap(~ STATION, scales = "free_y") +
+  labs(
+    title = "Raw precipitation time series",
+    x = "Time",
+    y = "Precipitation"
+  )
+
+# In this plot, everything is kind of overlapping
+# Because there are too many points and the facets are small.
+# we can clearly see big spikes not small ones, Too much Time data.
+
+# Zeros should stay in the data because they represent dry days
+
+
+# -------  plot B  -------
+# monthly aggregation
+p2 <- dta_t[STATION %in% st_sel,
+                  .(prec_sum = sum(VALUE, na.rm = TRUE)),
+                  by = .(STATION, month)]
+
+plot_B <- ggplot(dt_month, aes(x = month, y = prec_sum, colour = STATION)) +
+  geom_line()+
+  facet_wrap(~ STATION, scales = "free_y") +
+  labs(title = "Monthly aggregated precipitation",
+       x = "Month",
+       y = "Total precipitation")
+
+# Monthly aggregation is good because we can see paterns more clearly
+# We can also easily compare different stations, I also coloured them
+# we also can easily see wet and dry periods
+# with aggregation we lose information about extreme events maybe one day precipitation was 
+# crazy high, we wouldn't see that because we see monthly sums
+
+# -------------  Plot 3  ---------
+# Extreme events
+top <- quantile(dta_cl$VALUE, 0.99)
+# With this we get tom 1% 
+
+# Extreme values:
+dta_ext <- dta_cl[STATION %in% st_sel & VALUE > top]
+
+p3 <- ggplot(dta_cl[STATION %in% st_sel], aes(x = DT, y = VALUE))+
+  geom_line() +
+  # for extremas:
+  geom_point(data = dta_ext, aes(x = DT, y = VALUE), colour = "red") +
+  # threshold line
+  geom_hline(yintercept = top, colour = "blue") +
+  facet_wrap(~ STATION, scales = "free_y")+
+  labs(
+    title = "Extreme precipitation events (top 1%)",
+    x = "Time",
+    y = "Precipitation"
+  )
+
+# This plot looks crazy, so I'll improvise and do one more plot but with 
+# monthly extreme values per station
+
+# monthly extremas per station
+dt_month_ext <- dta_cl[
+  STATION %in% st_sel,
+  .(max_val = max(VALUE)),
+  by = .(STATION, month)
+]
+
+monthly_ext <- ggplot(dt_month_ext, aes(x = month, y = max_val)) +
+  geom_line() +
+  geom_point(colour = "red") +
+  facet_wrap(~ STATION, scales = "free_y") +
+  labs(
+    title = "Monthly extreme precipitation per station",
+    x = "Month",
+    y = "Maximum precipitation"
+  )
+
+# This looks way better, we can clearly see monthly exteme
+
+# -----  Plot 4 -------
+# Distribution plots
+
+p4 <- ggplot(
+  dta_cl[STATION %in% st_sel],
+  aes(x = STATION, y = VALUE)
+) +
+  geom_boxplot() +
+  scale_y_log10() +
+  labs(
+    title = "Distribution of precipitation across stations",
+    x = "Station",
+    y = "Precipitation"
+  ) 
+# I decided to complare precipitation actoss stations with boxplots.
+# I used log scale because data contains many small values and zeros
+# But this plot can be misleading because log can't properly represent zeros
+
+# We have recquirement: One plot must compare distributions across elements.
+# but we have one element, so I'll do zero vs non zero value plot
+
+p5 <- ggplot(
+  dta_cl[STATION %in% st_sel],
+  aes(x = VALUE, fill = pos_value)
+) +
+  geom_histogram(bins = 50, position = "identity", alpha = 0.6) +
+  labs(
+    title = "Distribution of precipitation (zero vs non-zero)",
+    x = "Value",
+    y = "Count"
+  )
+
+# ------------- Plot 6 -----------
+# Clean quality plots
+# originally I thought suspicious values would be under 0 but we don't have that type of values
+# so I decided to define suspicious values as values that are extremly high
+# top 0.5% = suspicious
+thr_sus <- quantile(dta_cl$VALUE, 0.995)
+
+p6 <- ggplot(dta_cl[STATION %in% st_sel], aes(x = DT, y = VALUE)) +
+  geom_line()+
+  geom_point(data = dta_cl[STATION %in% st_sel & VALUE > thr_sus],
+             aes(x = DT, y = VALUE),
+             colour = "red") +
+  facet_wrap(~ STATION, scales = "free_y") +
+  labs(title = "Suspicious precipitation over time",
+       x = "Time",
+       y = "precipitation")
+
+#-------------- plot 7 --------
+# missing quality plots
+p7 <- ggplot(dta_cl[STATION %in% st_sel],
+               aes(x = STATION, fill = is.na(QUALITY))) +
+  geom_bar(position = "fill") +
+  labs(title = "Missing QUALITY values across stations",
+       x = "Station",
+       y = "Proportion")
+# as we can see plot doesn't provide any usefull information
+# because quality is always false
+
+# -----  Element comparison ----
+el_sel <- unique(dta_cl$ELEMENT)
+el_sel
+# there is only one element, I can't compare non existing elements
+
+# I used facet_wrap() in every plot because stations independent.
+# I used scales = "free_y" because stations have different precipitation magnitudes. Fixed scales would hide differences.
+# I used log10 scale for distributions because data is highly skewed with many zeros and extreme values.
+# I tried fixed scales, but it made smaller stations unreadable because all variation was compressed near zero.
+# Colour was used instead of linetype because linetype becomes unreadable with many stations/elements.
+
+# ----- Reshape Task -----
+dta_agg <- dta_cl[
+  , .(mean_val = mean(VALUE, na.rm = TRUE)),
+  by = .(STATION, ELEMENT)
+]
+
+dta_m <- dcast(dta_agg, STATION ~ ELEMENT, value.var = "mean_val")
+
+library(patchwork)
+
+final_plot <- (p1 | p2) /
+  (monthly_ext | p4)
+
+ggsave(
+  filename = "fig_p1_raw_timeseries.png",
+  plot = p1,
+  width = 10,
+  height = 6,
+  dpi = 300
+)
+
+ggsave(
+  filename = "fig_monthly_extremes.png",
+  plot = monthly_ext,
+  width = 10,
+  height = 6,
+  dpi = 300
+)
+
+# The most informative should be raw time series plot, because it shows all the data, but at the same time it's messy.
+# The hardest to visulise was suspicious values and quality because both of them had zero true components.
+# The most important ploting choice would be faceting.
+# Extreme spikes were definetly visible after ploting
+# There was one element, so it was very trustworthy
+# No faceting would hide differences between stations.
+
+
