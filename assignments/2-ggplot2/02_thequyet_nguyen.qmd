@@ -1,0 +1,386 @@
+---
+title: "ggplot2 project"
+author: The Quyet Nguyen
+format:
+  html:
+    fig-width: 14
+    fig-height: 12
+    fig-dpi: 300
+    out-width: "100%"
+execute:
+  cache: true
+---
+
+## Load data
+
+```{r}
+library(ggplot2);
+library(data.table);
+library(scales);
+library(patchwork);
+library(cowplot);
+library(lubridate);
+
+dta <- readRDS(file = "prec_data.rds")
+dta_t <- as.data.table(x = dta)
+```
+
+## Basic inspection
+
+```{r}
+dta_c <- class(x = dta)
+dta_c
+
+dta_t_c <- class(x = dta_t)
+dta_t_c
+
+head(x = dta)
+head(x = dta_t)
+
+colnames(x = dta)
+colnames(x = dta_t)
+
+nrow(x = dta)
+nrow(x = dta_t)
+
+ncol(x = dta)
+ncol(x = dta_t)
+
+dta_t[which.max(DT)]$DT
+dta_t[which.min(DT)]$DT
+
+length(unique(dta_t$STATION))
+length(unique(dta_t$ELEMENT))
+
+```
+
+Variables are natural candidates for x - STATION, ELEMENT, DT Variables are natural candidates for y - VALUE. Which variables are suitable for colour, group, facet, linetype, shape, alpha, or size - STATION, ELEMENT, FLAG, QUALITY. Variables should not be mapped directly because they would make the plot unreadable - VALUE and DT, too many data makes the plot unreadable.
+
+## Data preparation
+
+```{r}
+
+dta_t[, let(VALUE_DAY = frollsum(x = VALUE,
+                               n = 24),
+          VALUE_WEK = frollsum(x = VALUE,
+                               n = 24 * 7),
+          VALUE_MNT = frollsum(x = VALUE,
+                               n = 24 * 30)),
+    by = .(STATION)]
+
+
+dta_t[, MONTH := month(DT)]
+
+dta_t[, YEAR := year(DT)]
+
+```
+
+## Station selection
+
+Select top 6 stations with the highest total precipitation
+
+```{r}
+st_total_value <- dta_t[, .(TOTAL_VALUE = sum(VALUE, na.rm = TRUE)), by = STATION]
+
+st_sel <- tail(st_total_value[order(TOTAL_VALUE)], 6)
+
+```
+
+## Temporal plots
+
+### Plot A — raw or near-raw time series
+
+I start with plotting raw data of top 6 stations using geom_line()
+
+```{r}
+top_6_stations_raw <- dta_t[STATION %in% st_sel$STATION]
+ggplot(data = top_6_stations_raw, aes(x = DT, y = VALUE, color = STATION)) +
+  geom_line() +
+  labs(title = "Hourly precipitation time series", x = "Date time", y = "Precipitation")
+```
+
+#### Grammar of Graphics explanation
+
+- data: **top_6_stations_raw** containing precipitation data of selected 6 stations
+- mapping: which variables are mapped inside aes() -  VALUE variable (precipitation) is used for y axis, DT variable (date time) is used for y axis.
+- geom: **geom_line()** is used to plot time series data.
+- stat: the code uses default statistic.
+- facet: faceting is not used here to demonstrate the difference between with/without facet when plotting time series data for 6 stations.
+- scale: scales are not applied here, raw data is sufficient.
+- theme: default theme is sufficient here.
+
+The graph is not really readable, there are 6 different colors (stations) and large amount of data points. To improve readability of the graph, I add facet to the plot.
+
+```{r}
+p1 <- ggplot(data = top_6_stations_raw, aes(x = DT, y = VALUE, color = STATION)) +
+  geom_line() +
+  facet_wrap(facets = ~STATION, ncol = 2) +
+  theme(legend.position = "none") +
+  labs(title = "Hourly precipitation time series", x = "Date time", y = "Precipitation")
+
+p1
+```
+
+### Plot B — aggregated time series
+
+Here I will plot monthly mean precipitation in in each station. This can show seasonal pattern of precipitation in our selected stations.
+
+```{r}
+st_monthly <- top_6_stations_raw[, .(MON_MEAN = mean(VALUE, rm.na = TRUE)), by = .(STATION, MONTH)]
+p2 <- ggplot(data = st_monthly, aes(x = as.factor(MONTH), y = MON_MEAN, group = 1)) +
+  geom_line(color = "blue") +
+  geom_point(color = "navy") +
+  facet_grid(STATION ~ .) +
+  labs(title = "Average montly precipitation", x = "Month", y = "Average precipitation")
+
+p2
+```
+
+#### Grammar of Graphics explanation
+
+- data: **st_monthly** - calculation of monthly mean precipitation in each stations.
+- mapping: which variables are mapped inside aes() -  MON_MEAN variable (monthly average precipitation) is used for y axis, MONTH variable is used for y axis.
+- geom: **geom_point()** and **geom_point** are used to plot each data point in **st_monthly**.
+- stat: the code uses default statistic.
+- facet: facet_grid is used to render every station in a separate plot.
+- scale: scales are not applied here, calculated data is sufficient.
+- theme: default theme is sufficient here.
+
+However, by aggregating monthly mean values in the stations we lose the insight on extreme events which I will try to explore in the next step.
+
+### Plot C — extreme-event view
+
+To analyze a plot for extreme-event view, I will find the peak of VALUE_DAY in each STATION, then display the peak in the precipitation time series of each STATION. Here I will use a direct label to show the date time and value of the peak to highlight the event.
+
+```{r}
+
+top_6_stations_raw_m <- melt(data = top_6_stations_raw[, .(STATION, DT, 
+                             VALUE, VALUE_DAY, VALUE_WEK, VALUE_MNT)],
+              id.vars = c("STATION", "DT"))
+
+st_peaks <- top_6_stations_raw[, .SD[which.max(VALUE_DAY)], by = STATION]
+
+ggplot(data = top_6_stations_raw, aes(x = DT, y = VALUE_DAY)) +
+  geom_line(color = "blue") +
+  geom_point(data = st_peaks, 
+             color = "red", 
+             size = 2, alpha = 1) +
+  geom_label(data = st_peaks,
+             aes(y = VALUE_DAY, label = paste(format(DT, "%Y-%m-%d %H:%M"), "\n", round(VALUE_DAY, 1), "mm")),
+             vjust = "inward",
+             hjust = "inward",
+             fill = "white", fontface = "bold", size = 2.5, label.padding = unit(0.1, "lines")) +
+  facet_grid(STATION ~ .) +
+  labs(title = "Roll 24h precipitation time series", x = "Date time", y = "Rolling 24h precipitation")
+
+```
+
+## Distribution plots
+
+I start with a histogram of the precipitation across the stations.
+
+```{r}
+ggplot(top_6_stations_raw, aes(x = VALUE_DAY)) +
+  geom_histogram(fill = "blue", bins = 50) +
+  labs(title = "Roll 24h precipitation distribution", y = "Count", x = "Rolling 24h precipitation")
+```
+
+The plot has a long column on the left. Now I exclude the zero values from the data set.
+
+```{r}
+ggplot(top_6_stations_raw[VALUE_DAY > 0], aes(x = VALUE_DAY)) +
+  geom_histogram(fill = "blue", bins = 50) +
+  labs(title = "Roll 24h precipitation distribution", y = "Count", x = "Rolling 24h precipitation")
+```
+
+The first column drops significantly, indicating there are many zero values in the data set and excluding zero values helps focusing/comparing values where precipitation actually happens.
+
+Now I create a density plot of precipitation in the stations using original values.
+
+```{r}
+ggplot(top_6_stations_raw[VALUE_DAY > 0], aes(x = VALUE_DAY, fill = STATION)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "Roll 24h precipitation density", y = "Density", x = "Rolling 24h precipitation")
+```
+
+The plot doesn't provide much useful information when we want to analyse distribution density of precipitation data across stations. The plot in this case can be misleading since it could give an impression that the distribution density across stations is same. I will try to add **scale_x_log10** to the plot:
+
+```{r}
+p3 <- ggplot(top_6_stations_raw[VALUE_DAY > 0], aes(x = VALUE_DAY, fill = STATION)) +
+  geom_density(alpha = 0.4) +
+  scale_x_log10() +
+  labs(title = "Roll 24h precipitation density", y = "Density", x = "Rolling 24h precipitation")
+
+p3
+```
+
+The plot looks much better now, we can clearly see the difference between stations in distribution density after applying **scale_x_log10**, this demonstrates that the transformed scale is useful for the analysis.
+
+#### Grammar of Graphics explanation
+
+- data: **top_6_stations_raw** containing precipitation data of selected 6 stations.
+- mapping: which variables are mapped inside aes() -  VALUE_DAY variable (rolling 24h precipitation) is used for x axis, density of VALUE_DAY is used for y axis implicitly. The density areas are colored by stations.
+- geom: **geom_density()** is used to plot density of VALUE_DAY.
+- stat: the code uses default statistic.
+- facet: faceting is not used here. We want to have density plot of all the stations in a same graph for analysis.
+- scale: *scale_x_log10* is used to improve readability of the plot.
+- theme: default theme is sufficient here.
+
+Since there is only one ELEMENT in the data set, we can't compare distributions across elements.
+
+```{r}
+unique(dta_t$ELEMENT)
+```
+
+## Quality and suspicious-data plots
+
+First, I check the values of the FLAG and QUALITY column in the dataset.
+
+```{r}
+
+dta_t[, .N, by = .(FLAG, QUALITY)]
+
+```
+
+For this part, I assume that suspicious FLAG is anything not N/A and empty.
+
+```{r}
+top_6_stations_raw[,let(SUSPICIOUS_FLAG = !is.na(FLAG) & FLAG != ""), by = .(STATION)]
+
+p4 <- ggplot(data = top_6_stations_raw[SUSPICIOUS_FLAG == TRUE],
+       mapping = aes(x = DT, y = VALUE_DAY)) +
+  geom_point() +
+  facet_grid(STATION ~ .) +
+  labs(title = "Roll 24h precipitation with suspicious flag", y = "Date time", x = "Rolling 24h precipitation")
+
+p4
+
+```
+
+#### Grammar of Graphics explanation
+
+- data: **top_6_stations_raw** with new variable SUSPICIOUS_FLAG.
+- mapping: which variables are mapped inside aes() -  DT variable (date time) is used for x axis, VALUE_DAY is used for y axis.
+- geom: **geom_point()** is used to plot VALUE_DAY.
+- stat: the code uses default statistic.
+- facet: **facet_grid** is used here to display each station in a separate plot
+- scale: scale is not used here, calculated VALUE_DAY is sufficient.
+- theme: default theme is sufficient here.
+
+The result shows that the suspicious flags are only found in two stations out of six stations. Furthermore, these flags are concentrated within specific time frames and not distributed across the data set, this suggests the flag representing isolated issues/station-specific anomalies.
+
+Now I will investigate if there are any impossible or unlikely jumps in the data set by checking the difference between each time step in the stations.
+
+```{r}
+setorder(top_6_stations_raw, STATION, DT)
+top_6_stations_raw[STATION == shift(STATION), HOUR_DIFF_PREV_ROW := as.numeric(difftime(DT, shift(DT), units = "hours")), by = STATION]
+
+head(top_6_stations_raw)
+
+top_6_stations_raw[HOUR_DIFF_PREV_ROW > 0, VALUE_CHANGE_HOURLY := abs(VALUE_DAY - shift(VALUE_DAY)) / HOUR_DIFF_PREV_ROW]
+
+```
+
+Here I will define unlikely/impossible jumps are VALUE_CHANGE_HOURLY greater than 50.
+
+```{r}
+unlikely_jumps <- 50 
+
+ggplot(data = top_6_stations_raw[HOUR_DIFF_PREV_ROW > 0], 
+       mapping = aes(x = DT, y = VALUE_CHANGE_HOURLY)) +
+  geom_line(colour = "blue") +
+  geom_point(data = top_6_stations_raw[VALUE_CHANGE_HOURLY > unlikely_jumps],
+             mapping = aes(colour = "red"),
+             size = 2) +
+  facet_grid(STATION ~ .) +
+  labs(title = "Hourly precipitation change time series", y = "Hourly precipitation change", x = "Date time")
+```
+
+In the result we can see that VALUE_CHANGE_HOURLY greater than 50 is only found once across our selected stations. Although, there were few times precipitation reached closely to 50, suggests 50 of VALUE_CHANGE_HOURLY only an extreme/outliner, but is still well in range of possible values.
+
+## Element comparison plots
+
+```{r}
+unique(dta_t$ELEMENT)
+```
+
+As we found that there is only 1 element in our data set, element comparison plots are not applicable here.
+
+## Reshape step
+
+In the data set, we have different columns for aggregated values (24 hours, 7 days, 1 months). I will use **melt** to combine these columns into a single column in the new data table **dta_m**
+
+```{r}
+dta_m <- melt(top_6_stations_raw,
+              id.vars = c("STATION", "DT"),
+              measure.vars = c("VALUE_DAY", "VALUE_WEK", "VALUE_MNT"),
+              variable.name = "AGG_TIME")
+
+dta_m
+
+```
+
+This can be useful when we want to plot VALUE_DAY, VALUE_WEK, VALUE_MNT in the stations. Without reshaping, we would need 3 separate commands to create the plots. But after reshaping we can utilize facet with AGG_TIME as a parameter.
+
+```{r}
+ggplot(dta_m, aes(x = DT, y = value, color = AGG_TIME)) +
+  geom_line() +
+  facet_grid(AGG_TIME ~ STATION) +
+  scale_color_discrete(name = "Rolling period", 
+                       labels = c("24h", "Weekly", "Monthly"))
+  labs(title = "Rolling precipitation change time series", y = "Precipitation", x = "Date time")
+```
+
+## Final combined figure
+
+```{r}
+#| fig-width: 14
+#| fig-height: 16
+#| out-width: "100%"
+#| fig-dpi: 300
+(p1 + p2) / (p3 + p4)
+
+```
+
+The final figure demonstrates that the aggregation of data by month (panel 2) hide the extreme events observed in panel 1. Although the pattern of monthly precipitation is strongly similar across the stations, we can clearly see some stations recorded extreme events while other stations didn't at the same time frame.
+
+The density plot (panel 3) shows a heavy overlapping of precipitation density across the stations and lie between 0-10. Value around 100 remains an outliner, indicating that extreme events were rare during the period covered by the data set.
+
+The last panel demonstrates the quality of our data set. The suspicious data is an isolated issue, concentrated at the specific time frame and doesn't spread randomly across the time series.
+
+```{r}
+
+ggsave(
+  plot = p2,
+  filename = "monthly_mean_prec_top_6_highest_24h_cummulative_prec.png",
+  width = 14,
+  height = 16,
+  units = "cm",
+  dpi = 300,
+)
+
+
+ggsave(
+  plot = p3,
+  filename = "prec_density_top_6_highest_24h_cummulative_prec.png",
+  width = 14,
+  height = 16,
+  units = "cm",
+  dpi = 300,
+)
+```
+
+## Final conclusions
+
+1.  Visualisation was the most informative: the plot A - raw time series gives an overview to the values in each station in the data. This is the base information for further plotting.
+2.  Visualisation was the hardest to design well: the plot C — extreme-event view is difficult to adjust the label displaying date time and value of the extreme event.
+3.  Plotting choices were most important for readability - width, height, color are some of the most important factors to for readability of the plots
+4.  Suspicious data problems became visible only after plotting - after plotting suspicious flags, it became clearer that it is an isolated issue at specific time frame in certain stations. The issue doesn't appear randomly and in majority of the stations.
+5.  Station looked most unusual: the two stations with suspicious flag are most unusual. Specifically, the station **0-20000-0-11643** where the values with suspicious flag concentrate highly around mid-2023.
+
+```{r}
+unique(top_6_stations_raw[SUSPICIOUS_FLAG == TRUE]$STATION)
+```
+
+6.  ELEMENT looked most trustworthy, and which least trustworthy: there is only one ELEMENT in the data set.
+7.  Default ggplot2 choices would have produced a poor or misleading result here: the default density plot gives a poorly result for our data set and it is hard to interpret the plot at the default state. Adding transformed scale improves the plot significantly.
