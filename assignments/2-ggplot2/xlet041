@@ -1,0 +1,114 @@
+
+
+library(data.table)
+library(ggplot2)
+library(lubridate)
+
+# load dataset
+pth <- "C:/Users/Admin/Desktop/THAO TÚNG DỮ LIỆU R"
+fls <- list.files(path = pth,
+                  recursive = TRUE,
+                  pattern = ".csv",
+                  full.names = TRUE)
+fls[1]
+dta <- read.table(file = fls[1], 
+                  header = TRUE, 
+                  sep = ",")
+dt <- as.data.table(dta)
+
+
+# xem du lieu co gi
+# quick look at data
+head(dt)
+str(dt)
+
+# chi giu cot can thiet
+# keep only useful columns
+dt <- dt[, .(STATION, DT, VALUE)]
+
+
+# phai sort truoc khi rolling
+# must order before rolling calc
+setorder(dt, STATION, DT)
+
+
+
+# rolling sum theo thoi gian
+# smooth values across time
+dt[, `:=`(
+  val_day  = frollsum(VALUE, 24),
+  val_week = frollsum(VALUE, 24 * 7),
+  val_mon  = frollsum(VALUE, 24 * 30)
+), by = STATION]
+
+
+
+# de plot nhieu bien cung luc
+# convert for easier plotting
+dt_long <- melt(
+  dt,
+  id.vars = c("STATION", "DT"),
+  variable.name = "measure",
+  value.name = "value"
+)
+
+
+# lay 5 station dau tien
+# reduce complexity
+st_pick <- unique(dt_long$STATION)[1:5]
+
+dt_plot <- dt_long[STATION %in% st_pick]
+
+
+
+# moi hang = 1 variable
+# moi cot = 1 station
+vars <- unique(dt_plot$measure)
+sts  <- unique(dt_plot$STATION)
+
+par(
+  mfrow = c(length(vars), length(sts)),
+  mar = c(2, 2, 2, 1)
+)
+
+for (m in vars) {
+  for (s in sts) {
+    
+    sub_dt <- dt_plot[measure == m & STATION == s]
+    
+    plot(
+      x = sub_dt$DT,
+      y = sub_dt$value,
+      type = "l",
+      col = "darkblue",
+      main = paste("S:", s, "|", m),
+      xlab = "",
+      ylab = ""
+    )
+  }
+}
+
+
+# ECDF - distribution
+# xem phan bo gia tri
+ggplot(dt_plot) +
+  stat_ecdf(aes(x = value, colour = measure)) +
+  facet_grid(measure ~ STATION) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+# BOXPLOT theo thang
+# check season pattern
+ggplot(dt_plot) +
+  geom_boxplot(aes(
+    x = factor(month(DT)),
+    y = value,
+    fill = measure
+  )) +
+  facet_grid(measure ~ STATION) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+
+
+
