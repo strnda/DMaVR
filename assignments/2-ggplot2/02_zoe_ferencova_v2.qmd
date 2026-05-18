@@ -1,0 +1,981 @@
+---
+title: "Zoe Ferencova - ggplot2 project"
+format: html
+---
+
+## Load data
+
+```{r}
+## load data
+dta <- readRDS(file = "data/prec_data.rds")
+
+## load packages
+library(data.table)
+library(ggplot2)
+library(scales)
+library(patchwork)
+
+## convert to data.table
+dta_t <- as.data.table(x = dta)
+```
+
+
+## Basic inspection for plotting
+
+```{r}
+## classes
+class(x = dta)
+class(x = dta_t)
+```
+
+```{r}
+## first rows
+head(x = dta_t)
+```
+
+```{r}
+## column names, number of rows, number of columns
+names(x = dta_t)
+nrow(x = dta_t)
+ncol(x = dta_t)
+```
+
+```{r}
+## time range of DT
+range(x = dta_t$DT)
+```
+
+```{r}
+## number of unique STATIONs and ELEMENTs
+dta_t[, uniqueN(x = STATION)]
+dta_t[, uniqueN(x = ELEMENT)]
+```
+
+**Which variables are candidates for x and y?**
+
+The x-axis should contain independent variables such as continuous ordered variables (that have a natural direction/order) or categorical grouping variables (for comparing groups side by side). In this case, a natural option for the former would be time (DT, mo, yr, hr) and for the latter, STATION or year.
+
+The y-axis shows dependent variables (the variable whose variation we are trying to explain). The best option for this is continuous measurement variables, in this case VALUE, which is the actual rainfall measurement.
+
+**Which variables are suitable for colour, group, facet, linetype, shape, alpha, or size?**
+
+- `STATION`: since we have 400+ stations, it doesn't make sense to show different stations through different colors, linetypes, or shapes. same thing with alpha/size since it isn't a continuous variable. if we wanted to choose a few specific stations to look at and compare, we could use facet or color to represent them.
+- `ELEMENT`: there is only one `ELEMENT`, so this doesn't really apply here 
+- `DT`: continuous, so doesn't make sense for color/shape variation and alpha/size doesn't make sense for time data. Could use for facet with grouped `DT` value like year, month, or hour, while representing either `STATION` or `DT` on the x-axis.
+- `VALUE`: almost certainly belongs on the y-axis so doesn't make sense for use with secondary information.
+- `FLAG`: could be represented using color here if we wanted to differentiate points based on whether or not they contain a flag. Similarly, could be separated as facet if we want a side by side comparison.
+- `QUALITY`: same idea as `FLAG`
+
+**Which variables should not be mapped directly?**
+
+`STATION` at full scale (431 colours is unreadable), raw `DT` as a facet or colour (millions of unique timestamps), and `ELEMENT` (single level carries no information).
+
+
+## Reproducing cleaning steps
+
+```{r}
+## drop X column
+dta_t[, X := NULL]
+
+## extract time components
+dta_t[, yr := year(x = DT)]
+dta_t[, mo := month(x = DT)]
+dta_t[, hr := hour(x = DT)]
+
+## flag low quality rows
+dta_t[, low_quality := QUALITY %in% c(3, 4)]
+
+## flag extreme values using IQR method on non-zero values
+q75 <- quantile(x = dta_t$VALUE[dta_t$VALUE > 0],
+                probs = 0.75,
+                na.rm = TRUE)
+
+iqr_val <- IQR(x = dta_t$VALUE[dta_t$VALUE > 0],
+               na.rm = TRUE)
+
+dta_t[, extreme_val := VALUE > q75 + 3 * iqr_val]
+
+## standardize FLAG
+dta_t[, FLAG := fifelse(test = FLAG == "",
+                        yes = NA_character_,
+                        no = FLAG)]
+
+dta_t[, FLAG := as.factor(x = FLAG)]
+
+## flag duplicates and missing values
+dta_t[, duplicate := duplicated(x = dta_t,
+                                by = c("STATION", "DT"))]
+
+dta_t[, missing_val := is.na(x = VALUE)]
+
+## create clean dataset
+dta_clean <- dta_t[duplicate == FALSE & missing_val == FALSE]
+dta_clean[, duplicate := NULL]
+dta_clean[, missing_val := NULL]
+
+## rename DT to DATETIME
+setnames(x = dta_clean,
+         old = "DT",
+         new = "DATETIME",
+         skip_absent = TRUE)
+
+## non-zero subset
+nz <- dta_clean[VALUE > 0]
+```
+
+
+## Data preparation
+
+```{r}
+## non-zero rainfall indicator
+dta_clean[, is_rain := VALUE > 0]
+```
+
+```{r}
+## monthly aggregated totals per station
+## reduces ~61000 hourly points to ~84 per station for temporal plots
+monthly_totals <- dta_clean[,
+                             .(monthly_total = sum(x = VALUE, na.rm = TRUE)),
+                             by = .(STATION, yr, mo)]
+```
+
+```{r}
+## daily totals and extreme day flag per station
+## used as the basis for the seasonal extreme analysis
+daily_totals <- dta_clean[,
+                           .(daily_total = sum(x = VALUE, na.rm = TRUE),
+                             any_extreme = any(extreme_val == TRUE)),
+                           by = .(STATION, date = as.Date(x = DATETIME))]
+
+daily_totals[, yr := year(x = date)]
+daily_totals[, mo := month(x = date)]
+```
+
+**Why each variable is useful for plotting:**
+
+- `yr`, `mo`, `hr`: extracted from `DT` during cleaning, needed for temporal grouping and the calendar heatmap axes.
+- `low_quality`, `extreme_val`: created during cleaning, used to highlight suspicious rows and extreme events in plots.
+- `is_rain`: separates dry hours from rainy hours. Filtering to `is_rain == TRUE` before distribution plots prevents zero inflation.
+- `monthly_totals`: aggregating to monthly totals makes temporal plots readable and is used for the calendar heatmap.
+- `daily_totals`: daily aggregation preserves individual extreme events while reducing hourly noise (useful for the seasonal analysis).
+
+
+## Station selection
+
+```{r}
+## shared colour variables
+col_lo  <- "#f4a261"
+col_mid <- "#2a9d8f"
+col_hi  <- "#e63946"
+
+month_labels <- c("J", "F", "M", "A", "M", "J", "J", "A", "S", "O", "N", "D")
+```
+
+```{r}
+## station intensity and quality summary
+st_sum <- dta_clean[VALUE > 0,
+                    .(mean = mean(x = VALUE),
+                      sd = sd(x = VALUE),
+                      max = max(x = VALUE)),
+                    by = STATION]
+
+st_counts <- dta_clean[,
+                        .(n_rows = .N,
+                          n_nonzero = sum(VALUE > 0),
+                          n_low_qual = sum(low_quality == TRUE),
+                          n_extreme = sum(extreme_val == TRUE)),
+                        by = STATION]
+
+st_sum <- merge(x = st_sum,
+                y = st_counts,
+                by = "STATION")
+
+## save full network summary before filtering
+st_sum_full <- copy(x = st_sum)
+
+## restrict to complete records only
+## 61361 = expected hours across full study period
+st_sum <- st_sum[n_rows == 61361]
+```
+
+```{r}
+## selection rule: 2 stations per rainfall tier (low / mid / high)
+## within each tier, picking the 2 with the most extreme events
+## ensures all selected stations have enough extremes to show a seasonal pattern
+
+st_ord <- st_sum[order(mean)]
+n <- nrow(x = st_ord)
+
+tier_low  <- st_ord[1:floor(n / 3)][order(-n_extreme)][1:2]
+tier_mid  <- st_ord[(floor(n / 3) + 1):floor(2 * n / 3)][order(-n_extreme)][1:2]
+tier_high <- st_ord[(floor(2 * n / 3) + 1):n][order(-n_extreme)][1:2]
+
+st_info <- rbind(
+  tier_low[,  tier := "Low rainfall"],
+  tier_mid[,  tier := "Mid rainfall"],
+  tier_high[, tier := "High rainfall"]
+)
+
+st_sel <- st_info$STATION
+
+## labels: tier description on first line, station ID on second
+st_info[, label := paste0(tier, "\n", STATION)]
+
+## factor order: Low first, Mid second, High last
+tier_order <- c(
+  st_info[tier == "Low rainfall",  label],
+  st_info[tier == "Mid rainfall",  label],
+  st_info[tier == "High rainfall", label]
+)
+
+## tier factor for consistent ordering in plots
+st_info[, tier := factor(x = tier,
+                         levels = c("Low rainfall", "Mid rainfall", "High rainfall"))]
+
+## inspect selected stations
+st_info[, .(STATION, tier, mean, n_rows, n_extreme, n_low_qual)]
+```
+
+**Station selection:**
+
+Stations with incomplete records were removed first (keeping only those with 61,361 rows). Stations were then split into three tiers by mean non-zero rainfall intensity (low, mid, high). Within each tier, the two stations with the most extreme events were selected, giving 6 stations total. This ensures all selected stations have enough extreme days to reveal a seasonal pattern. The two stations per tier are not contrasted against each other; they serve as two data points that together represent the tier's behaviour. The Low and Mid tier means are very close (0.72-0.77 mm/hr) because most stations in this dataset cluster around similar rainfall intensities and the tier boundaries are just equal thirds of that distribution. The High tier is more clearly distinct at 0.93-1.04 mm/hr.
+
+**What is lost:** stations with data gaps are excluded. Stations with fewer extreme events within each tier are excluded, so the selection skews toward more active stations.
+
+
+## Temporal plots
+
+```{r}
+## filter and label monthly totals for selected stations
+monthly_sel <- monthly_totals[STATION %in% st_sel]
+monthly_sel <- merge(x = monthly_sel,
+                     y = st_info[, .(STATION, tier, label)],
+                     by = "STATION")
+monthly_sel[, label := factor(x = label, levels = tier_order)]
+monthly_sel[, date  := as.Date(paste(yr, mo, "01", sep = "-"))]
+```
+
+```{r}
+## Plot A: monthly timeline
+## aggregation reduces ~61000 hourly points to ~84 per station
+## zeros kept as they represent genuine dry months
+## free_y because fixed scales compress lower rainfall stations
+p1 <- ggplot(
+  data = monthly_sel,
+  mapping = aes(
+    x = date,
+    y = monthly_total,
+    colour = tier,
+    group = STATION
+  )
+) +
+  geom_line(linewidth = 0.4) +
+  facet_wrap(~ label, 
+             ncol = 2, 
+             scales = "free_y") +
+  scale_x_date(
+    date_breaks = "1 year",
+    date_labels = "%Y"
+  ) +
+  scale_colour_manual(
+    values = c("Low rainfall" = col_lo,
+               "Mid rainfall" = col_mid,
+               "High rainfall" = col_hi),
+    name = "Tier"
+  ) +
+  labs(
+    title = "Monthly total rainfall by station (2018-2024)",
+    subtitle = "Colour indicates rainfall tier, free y-axis scales",
+    x = "Date",
+    y = "Monthly total rainfall (mm)"
+  ) +
+  theme_minimal() +
+  theme(
+    strip.text = element_text(size = 7),
+    axis.text.x = element_text(angle = 45, 
+                               hjust = 1, 
+                               size = 7)
+  )
+
+p1
+```
+
+*Monthly aggregation is the minimum needed for readability since raw hourly data produces millions of overlapping points. Free y-scales are used because fixed scales would compress the Low rainfall tier panels into flat unreadable lines.*
+
+```{r}
+## Plot B: calendar heatmap
+## shared colour scale allows cross-station comparison
+## monthly totals: darker cell = more rain that month
+p2 <- ggplot(
+  data = monthly_sel,
+  mapping = aes(
+    x = mo,
+    y = factor(x = yr),
+    fill = monthly_total
+  )
+) +
+  geom_tile(colour = "white", 
+            linewidth = 0.3) +
+  facet_wrap(~ label, 
+             ncol = 2) +
+  scale_x_continuous(
+    breaks = 1:12,
+    labels = month_labels
+  ) +
+  scale_fill_gradient(
+    low = "#edf8fb",
+    high = "#006d77",
+    name = "Total\nrainfall (mm)"
+  ) +
+  labs(
+    title = "Calendar heatmap of monthly rainfall by station",
+    subtitle = "Darker cells indicate more rainfall, shared colour scale across all panels",
+    x = "Month",
+    y = "Year"
+  ) +
+  theme_minimal() +
+  theme(
+    strip.text = element_text(size = 7),
+    panel.grid = element_blank(),
+    axis.text.y = element_text(size = 6)
+  )
+
+p2
+```
+
+*The heatmap reveals seasonal structure more clearly than the timeline. The shared colour scale allows direct comparison between stations, unlike Plot A which uses free y-scales. A summer peak is visible across most stations.*
+
+```{r}
+## daily data for selected stations with 99th percentile per station threshold
+daily_sel <- daily_totals[STATION %in% st_sel]
+daily_sel <- merge(x = daily_sel,
+                   y = st_info[, .(STATION, tier, label)],
+                   by = "STATION")
+
+daily_sel[, label := factor(x = label, 
+                            levels = tier_order)]
+
+## per-station 99th percentile
+daily_sel[, station_p99 := quantile(x = daily_total, 
+                                    probs = 0.99), 
+          by = STATION]
+
+daily_sel[, is_extreme_day := daily_total > station_p99]
+
+## most extreme day per station for label
+most_extreme <- daily_sel[is_extreme_day == TRUE,
+                           .SD[which.max(daily_total)],
+                           by = .(STATION, label)]
+```
+
+```{r}
+## Plot C: daily totals with extreme events highlighted
+## per-station 99th percentile threshold so each station is judged against its own baseline
+## global threshold rejected: high stations dominate it, low stations appear event-free
+## 95th percentile rejected: too many points flagged (~127 per station)
+p3 <- ggplot(
+  data = daily_sel,
+  mapping = aes(x = date, y = daily_total)
+) +
+  geom_line(colour = "grey75", linewidth = 0.3) +
+  geom_point(
+    data = daily_sel[is_extreme_day == TRUE],
+    mapping = aes(x = date, y = daily_total),
+    colour = "#8b2020",
+    size = 1.2,
+    alpha = 0.8
+  ) +
+  geom_line(
+    mapping = aes(y = station_p99),
+    colour = "#8b2020",
+    linetype = "dashed",
+    linewidth = 0.4
+  ) +
+  geom_text(
+    data = most_extreme,
+    mapping = aes(
+      x = date,
+      y = daily_total,
+      label = round(x = daily_total, digits = 1)
+    ),
+    vjust = -0.8,
+    size = 2.3,
+    colour = "#8b2020"
+  ) +
+  coord_cartesian(clip = "off") +
+  facet_wrap(~ label, ncol = 2, scales = "free_y") +
+  labs(
+    title = "Daily rainfall totals with extreme events highlighted",
+    subtitle = "Red points exceed each station's own 99th percentile (dashed line)",
+    x = "Date",
+    y = "Daily total rainfall (mm)"
+  ) +
+  theme_minimal() +
+  theme(
+    strip.text = element_text(size = 7),
+    axis.text.x = element_text(size = 7)
+  )
+
+p3
+```
+
+*Each station's threshold is defined relative to its own distribution rather than a global one. A global threshold was tried first but made Low and Mid rainfall tier stations sparse. The 99th percentile was chosen over the 95th because the 95th flagged around 127 days per station over 7 years, making the plot too dense to read individual events. Thresholds are not comparable across stations in absolute terms. The most extreme daily total at five of the six stations falls in late 2024, suggesting a single large regional storm rather than independent station-level anomalies.*
+
+
+## Distribution plots
+
+```{r}
+## non-zero values for selected stations
+nz_sel <- nz[STATION %in% st_sel]
+nz_sel <- merge(x = nz_sel,
+                y = st_info[, .(STATION, tier, label)],
+                by = "STATION")
+nz_sel[, label := factor(x = label, levels = tier_order)]
+```
+
+```{r}
+## Plot D: violin and boxplot of non-zero intensity
+## zeros excluded: they represent dry hours not rainfall measurements
+## including zeros collapses all violins into a spike at zero
+## boxplot alone would hide distribution shape
+## log y-axis: violin bodies invisible near zero on a linear scale
+p4 <- ggplot(
+  data = nz_sel,
+  mapping = aes(
+    x = label,
+    y = VALUE,
+    fill = tier
+  )
+) +
+  geom_violin(alpha = 0.4, 
+              trim = FALSE) +
+  geom_boxplot(
+    width = 0.15,
+    outlier.size = 0.5,
+    outlier.alpha = 0.3
+  ) +
+  scale_y_log10(labels = label_comma()) +
+  scale_x_discrete(limits = tier_order) +
+  scale_fill_manual(
+    values = c("Low rainfall" = col_lo,
+               "Mid rainfall" = col_mid,
+               "High rainfall" = col_hi),
+    name = "Tier"
+  ) +
+  labs(
+    title = "Distribution of non-zero rainfall intensity by station",
+    subtitle = "Ordered Low to High rainfall, violin shows shape, box shows median / IQR / range",
+    x = "Station",
+    y = "Rainfall intensity (mm, log scale)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(size = 7))
+
+p4
+```
+
+*All stations share a similar right-skewed shape. High rainfall tier stations have noticeably wider upper tails, consistent with their higher extreme event counts. A boxplot alone would hide this shape difference. Log y-axis is essential: on a linear scale the violin bodies are invisible, compressed into a sliver near zero.*
+
+```{r}
+## extreme event counts per station per month across all years
+extreme_by_month <- daily_sel[,
+                               .(n_extreme = sum(is_extreme_day == TRUE)),
+                               by = .(STATION, label, tier, mo)]
+```
+
+```{r}
+## Plot E: extreme event count by month and station
+## shows the seasonal distribution of extreme events across the full study period
+## addresses zero inflation by focusing on extreme days rather than all hourly values
+p5 <- ggplot(
+  data = extreme_by_month,
+  mapping = aes(
+    x = factor(x = mo),
+    y = n_extreme,
+    fill = tier
+  )
+) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~ label, ncol = 2) +
+  scale_x_discrete(labels = month_labels) +
+  scale_fill_manual(
+    values = c("Low rainfall" = col_lo,
+               "Mid rainfall" = col_mid,
+               "High rainfall" = col_hi),
+    name = "Tier"
+  ) +
+  labs(
+    title = "Number of extreme events by month and station (2018-2024)",
+    subtitle = "Extreme days defined as exceeding each station's own 99th percentile",
+    x = "Month",
+    y = "Number of extreme days"
+  ) +
+  theme_minimal() +
+  theme(strip.text = element_text(size = 7))
+
+p5
+```
+
+*Plot E shows the seasonal distribution of extreme events across all years combined. Each bar shows how many extreme days occurred in that month over the full study period. The Low and Mid rainfall stations show a summer spike, while the High rainfall stations look more spread across the year.*
+
+
+## Seasonal extreme event analysis
+
+```{r}
+## reshape extreme event counts to wide then long
+## dta_m is the required reshape object
+
+## wide: one row per month, one column per station
+extreme_wide <- dcast(
+  data = extreme_by_month,
+  formula = mo ~ STATION,
+  value.var = "n_extreme",
+  fill = 0
+)
+
+## melt back to long for plotting
+dta_m <- melt(
+  data = extreme_wide,
+  id.vars = "mo",
+  variable.name = "STATION",
+  value.name = "n_extreme"
+)
+
+dta_m <- merge(x = dta_m,
+               y = st_info[, .(STATION, tier, label)],
+               by = "STATION")
+
+dta_m[, label := factor(x = label, 
+                        levels = tier_order)]
+```
+
+```{r}
+## extreme event counts by month and year per station
+extreme_by_month_yr <- daily_sel[,
+                                  .(n_extreme = sum(is_extreme_day == TRUE)),
+                                  by = .(STATION, label, tier, yr, mo)]
+```
+
+```{r}
+## Plot F: heatmap of extreme event count by month and year
+## shows whether extreme events cluster in specific months and years
+## or are spread evenly across the study period
+p6 <- ggplot(
+  data = extreme_by_month_yr,
+  mapping = aes(
+    x = mo,
+    y = factor(x = yr),
+    fill = n_extreme
+  )
+) +
+  geom_tile(colour = "white", linewidth = 0.3) +
+  facet_wrap(~ label, ncol = 2) +
+  scale_x_continuous(
+    breaks = 1:12,
+    labels = month_labels
+  ) +
+  scale_fill_gradient(
+    low = "#f5f0eb",
+    high = "#8b2020",
+    name = "Extreme\ndays"
+  ) +
+  labs(
+    title = "Extreme event count by station, month, and year",
+    subtitle = "Darker cells indicate more extreme days that month",
+    x = "Month",
+    y = "Year"
+  ) +
+  theme_minimal() +
+  theme(
+    strip.text = element_text(size = 7),
+    panel.grid = element_blank(),
+    axis.text.y = element_text(size = 6)
+  )
+
+p6
+```
+
+*Plot F combines the temporal and seasonal in one view. For Low and Mid rainfall stations, extreme events concentrate in summer months across most years. For High rainfall stations the pattern is more spread out, with extreme events appearing in winter and autumn months that are mostly empty for the other tiers.*
+
+```{r}
+## aggregate seasonal pattern by tier
+seasonal_agg <- dta_m[,
+                       .(total_extreme = sum(n_extreme)),
+                       by = .(mo, tier)]
+
+seasonal_agg[, prop_extreme := total_extreme / sum(total_extreme), by = tier]
+```
+
+```{r}
+## Plot G: seasonal pattern line plot
+## three lines on one plot makes the tier comparison easier
+p7 <- ggplot(
+  data = seasonal_agg,
+  mapping = aes(
+    x = mo,
+    y = prop_extreme,
+    colour = tier,
+    group = tier
+  )
+) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3) +
+  geom_hline(
+    yintercept = 1 / 12,
+    linetype = "dashed",
+    colour = "grey60",
+    linewidth = 0.5
+  ) +
+  scale_x_continuous(
+    breaks = 1:12,
+    labels = month_labels
+  ) +
+  scale_y_continuous(labels = label_percent()) +
+  scale_colour_manual(
+    values = c("Low rainfall" = col_lo,
+               "Mid rainfall" = col_mid,
+               "High rainfall" = col_hi),
+    name = "Tier"
+  ) +
+  labs(
+    title = "Seasonal distribution of extreme events by rainfall tier",
+    subtitle = "Proportion of each tier's annual extreme days, dashed line = uniform distribution",
+    x = "Month",
+    y = "Proportion of annual extreme days"
+  ) +
+  theme_minimal()
+
+p7
+```
+
+*Plot G shows Low and Mid rainfall stations with a sharp summer peak - extreme events are almost entirely concentrated between May and September. High rainfall stations show a relatively flatter curve with extreme events spread across the full year, including February and December where the other tiers record almost nothing.*
+
+
+## Quality and suspicious data plots
+
+*Before drawing conclusions from the extreme event analysis, it is worth checking whether quality issues behave seasonally in the same patterns as extreme events. QUALITY codes 3 and 4 are assumed to indicate lower quality based on standard meteorological conventions. This cannot be confirmed without the dataset documentation.*
+
+```{r}
+## quality proportions per station per month for selected stations
+dta_sel <- dta_clean[STATION %in% st_sel]
+dta_sel <- merge(x = dta_sel,
+                 y = st_info[, .(STATION, tier, label)],
+                 by = "STATION")
+dta_sel[, label := factor(x = label, 
+                          levels = tier_order)]
+
+quality_heatmap <- dta_sel[,
+                             .(prop_low_qual = mean(x = low_quality)),
+                             by = .(label, tier, yr, mo)]
+```
+
+```{r}
+## Plot H: quality heatmap, checking for seasonal concentration of quality issues
+p8 <- ggplot(
+  data = quality_heatmap,
+  mapping = aes(
+    x = mo,
+    y = factor(x = yr),
+    fill = prop_low_qual
+  )
+) +
+  geom_tile(colour = "white", linewidth = 0.2) +
+  facet_wrap(~ label, ncol = 2) +
+  scale_x_continuous(
+    breaks = 1:12,
+    labels = month_labels
+  ) +
+  scale_fill_gradient(
+    low = "#f5f0eb",
+    high = "#8b2020",
+    name = "Proportion\nlow quality",
+    labels = label_percent()
+  ) +
+  labs(
+    title = "Proportion of low quality rows by station and month",
+    subtitle = "Checking whether quality issues cluster in the same months as extreme events",
+    x = "Month",
+    y = "Year"
+  ) +
+  theme_minimal() +
+  theme(
+    strip.text = element_text(size = 7),
+    panel.grid = element_blank(),
+    axis.text.y = element_text(size = 6),
+    axis.text.x = element_text(size = 7)
+  )
+
+p8
+```
+
+```{r}
+## low quality counts per station
+low_qual_counts <- dta_sel[,
+                             .(n_low_qual = sum(low_quality == TRUE)),
+                             by = .(STATION, label, tier)]
+
+low_qual_counts[, label := factor(x = label, levels = rev(tier_order))]
+```
+
+```{r}
+## Plot I: low quality row counts by station
+p9 <- ggplot(
+  data = low_qual_counts,
+  mapping = aes(
+    x = label,
+    y = n_low_qual,
+    colour = tier
+  )
+) +
+  geom_segment(
+    mapping = aes(
+      x = label,
+      xend = label,
+      y = 0,
+      yend = n_low_qual
+    ),
+    colour = "grey70"
+  ) +
+  geom_point(size = 4) +
+  scale_colour_manual(
+    values = c("Low rainfall" = col_lo,
+               "Mid rainfall" = col_mid,
+               "High rainfall" = col_hi),
+    name = "Tier"
+  ) +
+  scale_y_continuous(
+    labels = label_comma(),
+    expand = c(0.05, 20)
+  ) +
+  coord_flip() +
+  labs(
+    title = "Low quality row counts by station",
+    subtitle = "Quality codes 3 or 4",
+    x = "Station",
+    y = "Number of low quality rows"
+  ) +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 7))
+
+p9
+```
+
+*Comparing Plot H against the seasonal bar charts in Plot E reveals that quality issues are not a meaningful confound for the seasonal extreme analysis. The most heavily flagged station (High rainfall, `0-203-0-11640`) has its quality issues concentrated in February through May 2022, which is outside the summer extreme event peak. For all other stations, quality issues are sparse and do not cluster in any particular season. QUALITY contains no missing values and FLAG values were negligible in the selected stations, so analysis focuses on QUALITY codes only.*
+
+
+## Element comparison
+
+```{r}
+## el_sel required object
+el_sel <- unique(x = dta_clean$ELEMENT)
+el_sel
+```
+
+The dataset contains only one element (`SRA1H`) so a direct element comparison is not possible.
+
+
+## Grammar of Graphics explanation
+
+**Plot p1 — Monthly timeline**
+
+- **data:** `monthly_sel`, monthly aggregated totals for 6 selected stations
+- **mapping:** `x = date`, `y = monthly_total`, `colour = tier`, `group = STATION`
+- **geom:** `geom_line()` connects ordered observations over time
+- **stat:** identity, values plotted as-is
+- **facet:** `facet_wrap(~ label, scales = "free_y")`, free y-scales because fixed scales compress lower rainfall stations into flat lines
+- **scale:** `scale_x_date()` with annual breaks, `scale_colour_manual()` assigns distinct muted colours to the three tiers
+- **theme:** `theme_minimal()`
+
+---
+
+**Plot p3 — Daily extremes**
+
+- **data:** `daily_sel` with pre-computed `station_p99` and `is_extreme_day`, `most_extreme` for labels
+- **mapping:** `x = date`, `y = daily_total` for base line, same filtered to extreme days for point layer, `y = station_p99` for threshold, `label = round(daily_total)` for annotation
+- **geom:** `geom_line()`, `geom_point()`, `geom_line(linetype = "dashed")`, `geom_text()`, four layers each serving a distinct purpose
+- **stat:** identity throughout, all values pre-computed
+- **facet:** `facet_wrap(~ label, scales = "free_y")`
+- **scale:** linear retained, daily totals in mm are directly interpretable
+- **theme:** `theme_minimal()`
+
+---
+
+**Plot p4 — Violin and boxplot**
+
+- **data:** `nz_sel`, non-zero hourly values only
+- **mapping:** `x = label` with explicit ordering via `scale_x_discrete(limits = tier_order)`, `y = VALUE`, `fill = tier`
+- **geom:** `geom_violin()` overlaid with `geom_boxplot()`, violin shows shape, box shows summary statistics, combination avoids the misleading simplification of boxplot alone
+- **stat:** `geom_violin()` computes a kernel density estimate, `geom_boxplot()` computes median and quartiles, both non-identity
+- **facet:** none, all six stations on one axis for direct comparison
+- **scale:** `scale_y_log10()`, violin bodies are invisible on a linear scale
+- **theme:** `theme_minimal()` 
+
+---
+
+**Plot p7 — Seasonal pattern line plot**
+
+- **data:** `seasonal_agg`, total extreme days per month per tier, computed from `dta_m` after reshaping
+- **mapping:** `x = mo`, `y = prop_extreme`, `colour = tier`, `group = tier`
+- **geom:** `geom_line()` and `geom_point()`, the line makes the shape of the seasonal curve immediately readable across tiers
+- **stat:** identity, totals pre-computed
+- **facet:** none, all three tiers on one plot so the comparison is immediate and direct
+- **scale:** `scale_x_continuous()` with month label abbreviations, `scale_colour_manual()` assigns the three tier colours
+- **theme:** `theme_minimal()`
+
+
+## Faceting and scale decisions
+
+**`facet_wrap()` vs `facet_grid()`**
+
+`facet_wrap(~ label, ncol = 2)` was used throughout rather than `facet_grid()`. `facet_grid()` was considered for the quality heatmap in an earlier version when two quality indicators (FLAG and QUALITY) were shown as separate rows. That version was changed after the FLAG row turned out to be entirely grey for all selected stations, adding complexity without information. With a single variable on both axes, `facet_wrap()` is cleaner and produces the same result.
+
+**Free vs fixed y-axis scales**
+
+`scales = "free_y"` was used in p1 and p3. Fixed scales were tried first and compress the Low rainfall tier panels into flat unreadable lines. Free scales correctly prioritise showing the shape of variation within each station. Plot B compensates by using a shared colour scale so cross-station magnitude comparison remains possible.
+
+**Log scale in p4**
+
+`scale_y_log10()` was used in p4. On a linear scale the violin bodies are invisible because most non-zero values fall below 2mm while the axis extends to 50mm+. Log scale was not used for all other plots where totals or counts on a linear scale are more directly readable
+
+**Line plot vs bar chart for seasonal comparison**
+
+A grouped bar chart was tried first for Plot G but made the tier comparison harder to read than expected. A line plot was chosen instead because the shape of the seasonal curve is the key finding, and lines make it immediately obvious that the Low and Mid rainfall lines peak sharply in summer while the High rainfall line stays relatively flatter.
+
+**Per-station vs global threshold in p3**
+
+A global 99th percentile threshold was tried first but made Low and Mid rainfall tier stations appear almost event-free. A per-station threshold was chosen so each station is judged against its own baseline, so the question is when each station experiences unusual rainfall, not when it beats the network maximum.
+
+
+## Reshape step
+
+```{r}
+## dta_m preview
+dta_m[1:6]
+```
+
+`extreme_by_month` has one row per station/month combination with `n_extreme` as a column. `dcast()` reshapes this to wide format with one row per month and one column per station. `melt()` then converts it back to long format with `STATION` as an explicit column. This long format is required for `ggplot2` to map station to a facet or colour aesthetic, and allows the tier and label information to be merged in cleanly before plotting. The aggregate `seasonal_agg` is then computed from `dta_m` for Plot G. Without reshaping, aggregating across tiers for that plot would require a less readable approach.
+
+
+## Final combined figure
+
+```{r}
+## four-panel figure: temporal, distribution, seasonal extreme, year-by-year extreme
+fig_final <- (p2 | p4) / (p7 | p3) +
+  plot_annotation(
+    title = "Seasonal patterns of extreme rainfall events across selected stations",
+    theme = theme(
+      plot.title = element_text(size = 20, margin = margin(b = 16, t = 10))
+      )
+  ) &
+  theme(
+    plot.margin = unit(c(0.5, 0.5, 0.5, 0.5), "cm"),
+    plot.title.position = "plot",
+    plot.title = element_text(hjust = 0)
+  )
+
+fig_final      
+```
+
+
+## Save figures
+
+```{r}
+## save final combined figure
+ggsave(
+  filename = "fig_final_summary.png",
+  plot = fig_final,
+  width = 16,
+  height = 12,
+  dpi = 300
+)
+```
+
+```{r}
+## save seasonal pattern plot
+ggsave(
+  filename = "fig_seasonal_extremes.png",
+  plot = p7,
+  width = 10,
+  height = 6,
+  dpi = 300
+)
+```
+
+
+## Network-wide context
+
+```{r}
+## scatter of mean rainfall intensity vs extreme event count across all complete-record stations
+st_all <- st_sum_full[n_rows == 61361]
+st_all[, is_selected := STATION %in% st_sel]
+```
+
+```{r}
+## does rainfall intensity predict extreme event count across the full network?
+p_network <- ggplot(
+  data = st_all,
+  mapping = aes(
+    x = mean,
+    y = n_extreme,
+    colour = is_selected,
+    size = is_selected,
+    alpha = is_selected
+  )
+) +
+  geom_point() +
+  scale_colour_manual(
+    values = c("TRUE" = "#8b2020", "FALSE" = "grey60"),
+    guide = "none"
+  ) +
+  scale_size_manual(
+    values = c("TRUE" = 3, "FALSE" = 1),
+    guide = "none"
+  ) +
+  scale_alpha_manual(
+    values = c("TRUE" = 1, "FALSE" = 0.4),
+    guide = "none"
+  ) +
+  scale_y_continuous(labels = label_comma()) +
+  labs(
+    title = "Rainfall intensity vs extreme event count across all complete-record stations",
+    subtitle = "Selected stations highlighted",
+    x = "Mean non-zero rainfall intensity (mm/hr)",
+    y = "Number of extreme events (2018-2024)"
+  ) +
+  theme_minimal()
+
+p_network
+```
+
+*There appears to be a positive relationship between mean rainfall intensity and extreme event count across the 431 complete-record stations. Wetter stations tend to see more extreme events over the study period, which is consistent with the tier-based selection producing stations with different rainfall behaviour. The selected stations span the full range of the network, confirming the selection is representative.*
+
+
+## Final discussion
+
+**1. Which visualisation was most informative?**
+
+Plot p7 (seasonal line plot). It makes the central finding immediately obvious: Low and Mid rainfall stations peak sharply in summer while the High rainfall tier line stays flatter across the year. This difference would have been much harder to see in a bar chart or table.
+
+**2. Which was hardest to design well?**
+
+Plot p3 (daily extremes). A global threshold made Low and Mid tier stations appear almost event-free. A 95th percentile per-station threshold flagged too many days to read. The 99th percentile per-station approach was the final choice and required drawing per-station dashed lines using `geom_line(aes(y = station_p99))` rather than `geom_hline()`.
+
+**3. Which plotting choices were most important for readability?**
+
+The line plot over bar chart in p7 (the shape of the curve is the finding), log scale in p4 (violins invisible without it), free y-scales in p1 and p3 (fixed scales flatten the Low rainfall tier panels), and per-station rather than global thresholds in p3.
+
+**4. What patterns became visible only after plotting?**
+
+The difference in seasonal extreme patterns between High and Low/Mid rainfall tier stations was only visible after aggregating into Plot G. Individual station plots (p5, p6) hint at it but the contrast is not obvious until the three tier lines are overlaid on one plot.
+
+**5. Which station looked most unusual?**
+
+Station `0-203-0-11640` (High rainfall). It has much more quality code rows than any other selected station (around 2,300 vs under 500 for all others), with those issues concentrated in early 2022. At the same time it has the most extreme events in the High rainfall tier. The combination of high activity and concentrated quality issues in a specific period makes it worth a closer look.
+
+**6. Which element looked most trustworthy?**
+
+Only one element exists (`SRA1H`) so this comparison cannot be made.
+
+**7. Which default ggplot2 choices would have been misleading?**
+
+A linear y-axis in p4 (violin bodies invisible), a boxplot without the violin overlay (hides the heavier upper tails at High rainfall tier stations), fixed facet scales in p1 and p3 (Low rainfall stations appear to have no variation), a global extreme threshold in p3, and a grouped bar chart for p7 (the difference in curve shape between tiers is harder to see than with lines).
