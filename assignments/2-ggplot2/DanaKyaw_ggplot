@@ -1,0 +1,288 @@
+title: "ggplot2"
+author: "Kyaw Dana"
+
+
+##    Part01-- Load data
+
+library(data.table)
+library(ggplot2)
+library(scales)
+library(patchwork)
+
+dta <- readRDS(file = "prec_data.rds")
+dta_t <- as.data.table(x = dta)
+
+
+##    Part02-- Basic inspection
+
+
+class(x = dta)
+class(x = dta_t)
+names(x = dta_t)
+head(x = dta_t)
+colnames(dta_t)
+dim(dta_t)
+
+range(dta_t$DT, na.rm = TRUE)
+
+length(unique(dta_t$STATION))
+length(unique(dta_t$ELEMENT))
+
+##drop the x column
+dta_t[, X := NULL]
+
+## DT variable is the best for x because it represents time
+## VALUE is the best for y because it contains measurements of precipitation.
+## STATION is the best for facet
+## VALUE and DT too many data make the plot unreadable.
+
+
+##    Part03-- Data Preparation
+
+dta_t[, yr := year(x = DT)]
+dta_t[, mo := month(x = DT)]
+dta_t[, hr := hour(x = DT)]
+
+dta_t
+
+dta_t[, value_positive := VALUE > 0]
+
+
+
+##    Part04-- Station Selection Strategy
+
+##I choose the 6 stations with the strategy of highest total precipitation.
+
+st_total <- dta_t[, .(total_value = sum(VALUE, na.rm = TRUE)), by = STATION]
+
+st_sel <- st_total[order(total_value)][1:6, STATION]
+
+st_sel
+##This rule is useful for readability and comparability.
+##By doing that stations with small values are filtered out.
+
+
+
+##    Part05 -- Temporal plots
+
+## plot A - raw or near-raw time series
+
+raw_stations <- dta_t[STATION %in% st_sel]
+
+p1 <- ggplot(data = raw_stations , 
+             aes(x = DT, y = VALUE, color = STATION)) +
+  facet_wrap(facets = ~STATION, ncol = 2) +
+  geom_line() +
+  labs(title = "Raw precipitation series", 
+       x = "Date",
+       y = "Precipitation")
+
+## i made a plot of raw data for the 6 stations.
+## There are so many data that overlapping.
+## Zeros should stay visible in the data because they represent dry days
+
+
+
+## plot B - Aggregated series
+
+## monthly aggregation
+dt_mon <- dta_t[STATION %in% st_sel]
+
+dt_month <- dt_mon[, .(
+  prec_month = sum(VALUE, na.rm = TRUE)),
+  by = .(Station = STATION,
+         Year = year(DT),
+         Month = month(DT),
+         Date = as.Date(paste(year(DT), month(DT), "01", sep = "-")))]
+
+dt_month
+
+p2 <- ggplot(data = dt_month , 
+             aes(x = Date , y = prec_month, color = Station)) +
+  facet_wrap(facets = ~Station, ncol = 2) +
+  geom_line() +
+  labs(title = "Monthly precipitation timeseries", 
+       x = "Date",
+       y = "Precipitation")+
+  theme_bw()
+
+## i made a daily values to monthly precipitation values by stations with separate panels.
+
+
+## Plot C - extreme-event view
+## extreme plots
+
+thr <- quantile(dta_t$VALUE, 0.999, na.rm = TRUE)
+dta_t[, extreme := VALUE > thr]
+
+
+# Compute the 99.9th percentile of VALUE
+# i also create a new column indicating whether VALUE exceeds this extreme threshold
+
+p3 <- ggplot(data = dta_t[STATION %in% st_sel],
+       mapping = aes(x = DT, y = VALUE, color = STATION)) +
+  geom_line(alpha = 0.6) +
+  geom_point(data = dta_t[STATION %in% st_sel & extreme == TRUE],
+             colour = "red",
+             size = 1.5) +
+  labs(title = "Extreme precipitation timeseries", 
+       x = "Date",
+       y = "Precipitation")+
+  facet_wrap(~ STATION, scales = "free_y") +
+  theme_bw()
+
+## I highlighted the extreme values with red dots for each station.
+
+
+
+##   Part06 -- distribution plots
+
+p4 <- ggplot(data = dt_month, 
+             aes(x = prec_month, fill = Station)) +
+      geom_histogram(bins = 20, color = "black") +
+      facet_wrap(~ Station, scales = "free_y") +
+      labs(title = "Distribution of Monthly Precipitation by Station",
+           x = "Precipitation",
+           y = "Frequency") +
+  theme_bw()
+
+
+ggplot(data = dt_month, 
+       aes(x = Station, y = prec_month, fill = Station)) +
+  geom_boxplot() +
+  labs(title = "Precipitation Distribution by Station",
+       x = "Station",
+       y = "Precipitation") +
+  theme_bw()
+
+## i use geom_histogram to show the distribution of continuous precipitation values and more clearly.
+## And i also use geom_boxplot for the data across stations by displaying median and extreme values.
+
+
+
+##  Part07 -- Quality and suspicious data plots
+
+dta_t[, no_q := is.na(QUALITY)]
+
+
+p5 <- ggplot(dta_t[STATION %in% st_sel],
+             aes(x = STATION, fill = no_q)) +
+  geom_bar(position = "fill") +
+  labs(title = "Missing QUALITY values across stations",
+       x = "Station",
+       y = "Proportion")
+
+## i plot the proportion of missing versus non-missing quality values for each selected station.
+
+
+dta_t[, suspicious := extreme | no_q]
+
+p6 <- ggplot(data = dta_t[STATION %in% st_sel],
+             mapping = aes(x = DT, y = VALUE, colour = suspicious)) +
+  geom_point(alpha = 0.6) +
+  labs(title = "Suspicious values across stations",
+       x = "Date",
+       y = "Value")+
+  facet_wrap(~ STATION) +
+  theme_bw()
+
+
+##  Part08 -- Element Comparison Plots
+
+
+el_sel <- unique(dta_t$ELEMENT)
+el_sel
+
+## there is only one element "'SRA1H" in the dataset.
+
+
+dt_year <- dt_mon[, .(
+  prec_year = sum(VALUE, na.rm = TRUE)),
+  
+  by = .(Station = STATION,
+         Year = year(DT))]
+
+dt_year
+
+
+##  Part09 -- Grammar of Graphics Explanations
+
+    
+##  Datetime(DT) and Value are mapped inside aes()
+##  I used geom_lines, geom_points, geom_histograms, geom_boxplots, and geom_bar chart.
+##  I used facet_wrap to split the data into separate panels for each station and it is more clearly compared comparison.
+##  theme_bw is used to improve clarity, reduce visual clutter, and enhance readability.
+
+
+
+##  Part11 -- Reshape Task
+
+dt_re <- dcast(dt_year, Station ~ Year, value.var = "prec_year")
+
+
+
+##  Part12 -- Multi-panel final figure
+
+Four_panel <- (p2 | p3) /
+  (p4 | p6)
+
+
+
+##  Part13 -- Saving output
+
+ggsave(
+  filename = "fig_monthly_precipitation.png",
+  plot = p2,
+  width = 10,
+  height = 6,
+  dpi = 300
+)
+
+ggsave(
+  filename = "fig_extremes.png",
+  plot = p3,
+  width = 10,
+  height = 6,
+  dpi = 300
+)
+
+ggsave(
+  filename = "fig_comparison.png",
+  plot = Four_panel,
+  width = 12,
+  height = 6,
+  dpi = 300
+)
+
+
+##  Part14 -- Final Discussion
+
+## I think the distribution series is the most informative becuz i can see the plots more clearly.
+
+## Extreme plot is the hardest to design well because i have to make again and again to make it right.
+
+## I think the most important plotting choice for readability is the color.
+
+## Plotting revealed that clustered extreme values becoming more visible.
+
+## The station with the most extreme spikes is the most unusual station i think.
+
+## There is only one element "SRA1H", so i think it is trustworthy.
+
+## Default ggplot2 setting such as no faceting, fixed scales and raw data plotting would have produced poor results.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
